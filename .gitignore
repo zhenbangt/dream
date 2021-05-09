@@ -124,3 +124,4 @@ result_tables
 
 
 experiments/e-rl2/visualize
+experiments/**/**/visualize

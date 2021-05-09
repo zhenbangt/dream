@@ -9,7 +9,7 @@ from envs import grid
 from torch import distributions as td
 from torch import nn
 from torch.nn import functional as F
-
+from pytorch_metric_learning import losses
 
 class Embedder(abc.ABC, nn.Module):
     """Defines the embedding of an object in the forward method.
@@ -120,6 +120,9 @@ class TrajectoryEmbedder(Embedder, relabel.RewardLabeler):
         self._transition_output_layer = nn.Linear(128, embed_dim)
         self._penalty = penalty
         self._use_ids = True
+        self._contra_loss_func = losses.ContrastiveLoss(
+            pos_margin=0, neg_margin=10
+        )  # seems like neg_margin needs fine-tuning
 
     def use_ids(self, use):
         self._use_ids = use
@@ -207,6 +210,9 @@ class TrajectoryEmbedder(Embedder, relabel.RewardLabeler):
         Returns:
           losses (dict(str: torch.FloatTensor)): see forward().
         """
+        ids_true = torch.tensor(
+            [traj[0].state.env_id for traj in trajectories]
+        )  # used for computing contrastive loss
         del trajectories
 
         transition_context_loss = (
@@ -215,10 +221,14 @@ class TrajectoryEmbedder(Embedder, relabel.RewardLabeler):
         transition_context_loss = (
             transition_context_loss * mask).sum() / mask.sum()
 
+
         cutoff = torch.ones(id_contexts.shape[0]) * 10
+
+        id_contexts_contra_loss = self._contra_loss_func(id_contexts, ids_true.squeeze(1))
         losses = {
             "transition_context_loss": transition_context_loss,
-            "id_context_loss": torch.max((id_contexts ** 2).sum(-1), cutoff).mean()
+            "id_context_loss": torch.max((id_contexts ** 2).sum(-1), cutoff).mean(),
+            "id_context_contrastive_loss": id_contexts_contra_loss
         }
         return losses
 
