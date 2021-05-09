@@ -121,3 +121,6 @@ git-metadata-codalab.txt
 cl_snapshots
 result_tables
 /third-party/miniwob-demos
+
+
+experiments/e-rl2/visualize
