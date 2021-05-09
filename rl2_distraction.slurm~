@@ -1,0 +1,15 @@
+#!/bin/bash
+#SBATCH --nodes 1
+#SBATCH --partition gpgpu
+#SBATCH --gres=gpu:p100:1
+#SBATCH --time 0-72:00:00
+#SBATCH --cpus-per-task=4
+
+
+module load Tensorflow/2.1.0-intel-2017.u2-GCC-6.2.0-CUDA10.1-Python-3.6.10-GPU
+
+source ~/virtualenv/python3.6.10/bin/activate
+
+cd /home/zhenbangt/skincnn/
+
+python B4.py
