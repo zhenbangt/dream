@@ -3,6 +3,7 @@
 #SBATCH --partition gpgpu
 #SBATCH --gres=gpu:p100:1
 #SBATCH --cpus-per-task=4
+#SBATCH --time=7-00:00:00
 
 
 echo "0"
@@ -19,7 +20,7 @@ source ~/virtualenv/python3.7.4/bin/activate
 
 echo "3"
 
-pip install -r requirements.txt
+
 
 echo "4"
 
