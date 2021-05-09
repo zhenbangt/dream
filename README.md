@@ -51,10 +51,10 @@ in the specified benchmark.
 ### Sparse-Reward 3D Visual Navigation:
 
 ```
-python3 main.py dream -b environment=\"miniworld_sign\" -c configs/default.json -c configs/miniworld.json
-python3 main_varibad.py e-rl2 -b environment=\"miniworld_sign\" -c configs/rl2.json -c configs/rl2-miniworld.json
-python3 main_varibad.py import -b environment=\"miniworld_sign\" -c configs/import.json -c configs/import-miniworld.json
-python3 main_varibad.py varibad -b environment=\"miniworld_sign\" -c configs/varibad.json -c configs/varibad-miniworld.json
+python main.py dream -b environment=\"miniworld_sign\" -c configs/default.json -c configs/miniworld.json
+python main_varibad.py e-rl2 -b environment=\"miniworld_sign\" -c configs/rl2.json -c configs/rl2-miniworld.json
+python main_varibad.py import -b environment=\"miniworld_sign\" -c configs/import.json -c configs/import-miniworld.json
+python main_varibad.py varibad -b environment=\"miniworld_sign\" -c configs/varibad.json -c configs/varibad-miniworld.json
 ```
 
 NOTE: Running [MiniWorld](https://github.com/maximecb/gym-miniworld) headless typically requires `xvfb-run`.
@@ -72,28 +72,28 @@ xvfb-run -a -s "-screen 0 1024x768x24 -ac +extension GLX +render -noreset" pytho
 ### Distracting Bus:
 
 ```
-python3 main.py dream -b environment=\"distraction\" -c configs/default.json
-python3 main_varibad.py e-rl2 -b environment=\"distraction\" -c configs/rl2.json
-python3 main_varibad.py import -b environment=\"distraction\" -c configs/import.json
-python3 main_varibad.py varibad -b environment=\"distraction\" -c configs/varibad.json
+python main.py dream -b environment=\"distraction\" -c configs/default.json
+python main_varibad.py e-rl2 -b environment=\"distraction\" -c configs/rl2.json
+python main_varibad.py import -b environment=\"distraction\" -c configs/import.json
+python main_varibad.py varibad -b environment=\"distraction\" -c configs/varibad.json
 ```
 
 ### Map:
 
 ```
-python3 main.py dream -b environment=\"map\" -c configs/default.json
-python3 main_varibad.py e-rl2 -b environment=\"map\" -c configs/rl2.json
-python3 main_varibad.py import -b environment=\"map\" -c configs/import.json
-python3 main_varibad.py varibad -b environment=\"map\" -c configs/varibad.json
+python main.py dream -b environment=\"map\" -c configs/default.json
+python main_varibad.py e-rl2 -b environment=\"map\" -c configs/rl2.json
+python main_varibad.py import -b environment=\"map\" -c configs/import.json
+python main_varibad.py varibad -b environment=\"map\" -c configs/varibad.json
 ```
 
 ### Cooking:
 
 ```
-python3 main.py dream -b environment=\"cooking\" -c configs/default.json
-python3 main_varibad.py e-rl2 -b environment=\"cooking\" -c configs/rl2.json
-python3 main_varibad.py import -b environment=\"cooking\" -c configs/import.json
-python3 main_varibad.py varibad -b environment=\"cooking\" -c configs/varibad.json
+python main.py dream -b environment=\"cooking\" -c configs/default.json
+python main_varibad.py e-rl2 -b environment=\"cooking\" -c configs/rl2.json
+python main_varibad.py import -b environment=\"cooking\" -c configs/import.json
+python main_varibad.py varibad -b environment=\"cooking\" -c configs/varibad.json
 ```
 
 # Citation

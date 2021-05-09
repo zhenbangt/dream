@@ -1,0 +1,3722 @@
+Commit: 01bd1877ab84e506b9e35d59e3469c1c1139119c
+
+README.md
+=======================================================
+lhs: 100644 | 8efed173e3eb497754c249cad40288e411240773
+rhs: 100644 | d8bcf6350605a4b5e260a695cacd751a0e1e577b
+---@@ -51,10 +51,10 @@ in the specified benchmark.
+ ### Sparse-Reward 3D Visual Navigation:
+ 
+ ```
+-python3 main.py dream -b environment=\"miniworld_sign\" -c configs/default.json -c configs/miniworld.json
+-python3 main_varibad.py e-rl2 -b environment=\"miniworld_sign\" -c configs/rl2.json -c configs/rl2-miniworld.json
+-python3 main_varibad.py import -b environment=\"miniworld_sign\" -c configs/import.json -c configs/import-miniworld.json
+-python3 main_varibad.py varibad -b environment=\"miniworld_sign\" -c configs/varibad.json -c configs/varibad-miniworld.json
++python main.py dream -b environment=\"miniworld_sign\" -c configs/default.json -c configs/miniworld.json
++python main_varibad.py e-rl2 -b environment=\"miniworld_sign\" -c configs/rl2.json -c configs/rl2-miniworld.json
++python main_varibad.py import -b environment=\"miniworld_sign\" -c configs/import.json -c configs/import-miniworld.json
++python main_varibad.py varibad -b environment=\"miniworld_sign\" -c configs/varibad.json -c configs/varibad-miniworld.json
+ ```
+ 
+ NOTE: Running [MiniWorld](https://github.com/maximecb/gym-miniworld) headless typically requires `xvfb-run`.
+@@ -72,28 +72,28 @@ xvfb-run -a -s "-screen 0 1024x768x24 -ac +extension GLX +render -noreset" pytho
+ ### Distracting Bus:
+ 
+ ```
+-python3 main.py dream -b environment=\"distraction\" -c configs/default.json
+-python3 main_varibad.py e-rl2 -b environment=\"distraction\" -c configs/rl2.json
+-python3 main_varibad.py import -b environment=\"distraction\" -c configs/import.json
+-python3 main_varibad.py varibad -b environment=\"distraction\" -c configs/varibad.json
++python main.py dream -b environment=\"distraction\" -c configs/default.json
++python main_varibad.py e-rl2 -b environment=\"distraction\" -c configs/rl2.json
++python main_varibad.py import -b environment=\"distraction\" -c configs/import.json
++python main_varibad.py varibad -b environment=\"distraction\" -c configs/varibad.json
+ ```
+ 
+ ### Map:
+ 
+ ```
+-python3 main.py dream -b environment=\"map\" -c configs/default.json
+-python3 main_varibad.py e-rl2 -b environment=\"map\" -c configs/rl2.json
+-python3 main_varibad.py import -b environment=\"map\" -c configs/import.json
+-python3 main_varibad.py varibad -b environment=\"map\" -c configs/varibad.json
++python main.py dream -b environment=\"map\" -c configs/default.json
++python main_varibad.py e-rl2 -b environment=\"map\" -c configs/rl2.json
++python main_varibad.py import -b environment=\"map\" -c configs/import.json
++python main_varibad.py varibad -b environment=\"map\" -c configs/varibad.json
+ ```
+ 
+ ### Cooking:
+ 
+ ```
+-python3 main.py dream -b environment=\"cooking\" -c configs/default.json
+-python3 main_varibad.py e-rl2 -b environment=\"cooking\" -c configs/rl2.json
+-python3 main_varibad.py import -b environment=\"cooking\" -c configs/import.json
+-python3 main_varibad.py varibad -b environment=\"cooking\" -c configs/varibad.json
++python main.py dream -b environment=\"cooking\" -c configs/default.json
++python main_varibad.py e-rl2 -b environment=\"cooking\" -c configs/rl2.json
++python main_varibad.py import -b environment=\"cooking\" -c configs/import.json
++python main_varibad.py varibad -b environment=\"cooking\" -c configs/varibad.json
+ ```
+ 
+ # Citation
+
+---
+
+dqn.py
+=======================================================
+lhs: 100644 | c7769c61393f236a1f34a58f96bfa002d80d8cb9
+rhs: 100644 | 69e2d1e3a79b3f99931899e81221742f88a7d742
+---@@ -1,494 +1,496 @@
+ # Adapted from https://github.com/ezliu/hrl
+ import collections
++
++import embed
+ import numpy as np
+-import torch
+-from torch import nn
+-from torch import optim
+-from torch.nn import utils as torch_utils
+-import schedule
+ import replay
+-import embed
++import schedule
++import torch
+ import utils
++from torch import nn, optim
++from torch.nn import utils as torch_utils
+ 
+ 
+ class DQNAgent(object):
+-  @classmethod
+-  def from_config(cls, config, env):
+-    dqn = DQNPolicy.from_config(config.get("policy"), env)
+-    replay_buffer = replay.ReplayBuffer.from_config(config.get("buffer"))
+-    optimizer = optim.Adam(dqn.parameters(), lr=config.get("learning_rate"))
+-    return cls(dqn, replay_buffer, optimizer, config.get("sync_target_freq"),
+-               config.get("min_buffer_size"), config.get("batch_size"),
+-               config.get("update_freq"), config.get("max_grad_norm"))
+-
+-  def __init__(self, dqn, replay_buffer, optimizer, sync_freq,
+-               min_buffer_size, batch_size, update_freq, max_grad_norm):
+-    """
+-    Args:
+-      dqn (DQNPolicy)
+-      replay_buffer (ReplayBuffer)
+-      optimizer (torch.Optimizer)
+-      sync_freq (int): number of updates between syncing the
+-        DQN target Q network
+-      min_buffer_size (int): replay buffer must be at least this large
+-        before taking grad updates
+-      batch_size (int): number of experience to sample per grad step
+-      update_freq (int): number of update calls per parameter update.
+-      max_grad_norm (float): gradient is clipped to this norm on each
+-        update
+-    """
+-    self._dqn = dqn
+-    self._replay_buffer = replay_buffer
+-    self._optimizer = optimizer
+-    self._sync_freq = sync_freq
+-    self._min_buffer_size = min_buffer_size
+-    self._batch_size = batch_size
+-    self._update_freq = update_freq
+-    self._max_grad_norm = max_grad_norm
+-    self._updates = 0
+-
+-    self._losses = collections.deque(maxlen=100)
+-    self._grad_norms = collections.deque(maxlen=100)
+-
+-  def update(self, experience):
+-    """Updates agent on this experience.
+-
+-    Args:
+-      experience (Experience): experience to update on.
+-    """
+-    self._replay_buffer.add(experience)
+-
+-    if len(self._replay_buffer) >= self._min_buffer_size:
+-      if self._updates % self._update_freq == 0:
+-        experiences = self._replay_buffer.sample(self._batch_size)
+-
+-        self._optimizer.zero_grad()
+-        loss = self._dqn.loss(experiences, np.ones(self._batch_size))
+-        loss.backward()
+-        self._losses.append(loss.item())
+-
+-        # clip according to the max allowed grad norm
+-        grad_norm = torch_utils.clip_grad_norm_(
+-            self._dqn.parameters(), self._max_grad_norm, norm_type=2)
+-        self._grad_norms.append(grad_norm)
+-        self._optimizer.step()
+-
+-      if self._updates % self._sync_freq == 0:
+-        self._dqn.sync_target()
+-
+-    self._updates += 1
+-
+-  def act(self, state, prev_hidden_state=None, test=False):
+-    """Given the current state, returns an action.
+-
+-    Args:
+-      state (State)
+-
+-    Returns:
+-      action (int)
+-      hidden_state (object)
+-    """
+-    return self._dqn.act(state, prev_hidden_state=prev_hidden_state, test=test)
+-
+-  @property
+-  def stats(self):
+-    def mean_with_default(l, default):
+-      if len(l) == 0:
+-        return default
+-      return np.mean(l)
+-
+-    stats = self._dqn.stats
+-    stats["loss"] = mean_with_default(self._losses, None)
+-    stats["grad_norm"] = mean_with_default(self._grad_norms, None)
+-    return {"DQN/{}".format(k): v for k, v in stats.items()}
+-
+-  def state_dict(self):
+-    """Returns a serializable dictionary containing all the relevant
+-    details from the class.
+-
+-    Returns:
+-      state_dict (dict)
+-    """
+-    # Currently doesn't serialize replay buffer to save memory
+-    return {
+-        "dqn": self._dqn.state_dict(),
+-        #"replay_buffer": self._replay_buffer,
+-        "optimizer": self._optimizer.state_dict(),
+-        "sync_freq": self._sync_freq,
+-        "min_buffer_size": self._min_buffer_size,
+-        "batch_size": self._batch_size,
+-        "update_freq": self._update_freq,
+-        "max_grad_norm": self._max_grad_norm,
+-        "updates": self._updates,
+-    }
+-
+-  def load_state_dict(self, state_dict):
+-    self._dqn.load_state_dict(state_dict["dqn"])
+-    #self._replay_buffer = state_dict["replay_buffer"]
+-    self._optimizer.load_state_dict(state_dict["optimizer"])
+-    self._sync_freq = state_dict["sync_freq"]
+-    self._min_buffer_size = state_dict["min_buffer_size"]
+-    self._batch_size = state_dict["batch_size"]
+-    self._update_freq = state_dict["update_freq"]
+-    self._max_grad_norm = state_dict["max_grad_norm"]
+-    self._updates = state_dict["updates"]
+-
+-  def set_reward_relabeler(self, reward_relabeler):
+-    """See DQNPolicy.reward_relabeler."""
+-    self._dqn.set_reward_relabeler(reward_relabeler)
++    @classmethod
++    def from_config(cls, config, env):
++        dqn = DQNPolicy.from_config(config.get("policy"), env)
++        replay_buffer = replay.ReplayBuffer.from_config(config.get("buffer"))
++        optimizer = optim.Adam(dqn.parameters(), lr=config.get("learning_rate"))
++        return cls(dqn, replay_buffer, optimizer, config.get("sync_target_freq"),
++                   config.get("min_buffer_size"), config.get("batch_size"),
++                   config.get("update_freq"), config.get("max_grad_norm"))
++
++    def __init__(self, dqn, replay_buffer, optimizer, sync_freq,
++                 min_buffer_size, batch_size, update_freq, max_grad_norm):
++        """
++        Args:
++          dqn (DQNPolicy)
++          replay_buffer (ReplayBuffer)
++          optimizer (torch.Optimizer)
++          sync_freq (int): number of updates between syncing the
++            DQN target Q network
++          min_buffer_size (int): replay buffer must be at least this large
++            before taking grad updates
++          batch_size (int): number of experience to sample per grad step
++          update_freq (int): number of update calls per parameter update.
++          max_grad_norm (float): gradient is clipped to this norm on each
++            update
++        """
++        self._dqn = dqn
++        self._replay_buffer = replay_buffer
++        self._optimizer = optimizer
++        self._sync_freq = sync_freq
++        self._min_buffer_size = min_buffer_size
++        self._batch_size = batch_size
++        self._update_freq = update_freq
++        self._max_grad_norm = max_grad_norm
++        self._updates = 0
++
++        self._losses = collections.deque(maxlen=100)
++        self._grad_norms = collections.deque(maxlen=100)
++
++    def update(self, experience):
++        """Updates agent on this experience.
++
++        Args:
++          experience (Experience): experience to update on.
++        """
++        self._replay_buffer.add(experience)
++
++        if len(self._replay_buffer) >= self._min_buffer_size:
++            if self._updates % self._update_freq == 0:
++                experiences = self._replay_buffer.sample(self._batch_size)
++
++                self._optimizer.zero_grad()
++                loss = self._dqn.loss(experiences, np.ones(self._batch_size))
++                loss.backward()
++                self._losses.append(loss.item())
++
++                # clip according to the max allowed grad norm
++                grad_norm = torch_utils.clip_grad_norm_(
++                    self._dqn.parameters(), self._max_grad_norm, norm_type=2)
++                self._grad_norms.append(grad_norm)
++                self._optimizer.step()
++
++            if self._updates % self._sync_freq == 0:
++                self._dqn.sync_target()
++
++        self._updates += 1
++
++    def act(self, state, prev_hidden_state=None, test=False):
++        """Given the current state, returns an action.
++
++        Args:
++          state (State)
++
++        Returns:
++          action (int)
++          hidden_state (object)
++        """
++        return self._dqn.act(state, prev_hidden_state=prev_hidden_state, test=test)
++
++    @property
++    def stats(self):
++        def mean_with_default(l, default):
++            if len(l) == 0:
++                return default
++            return np.mean(torch.as_tensor(list(l)).cpu().numpy())  # np.mean(l) # windows fix
++
++        stats = self._dqn.stats
++        stats["loss"] = mean_with_default(self._losses, None)
++        stats["grad_norm"] = mean_with_default(self._grad_norms, None)
++        return {"DQN/{}".format(k): v for k, v in stats.items()}
++
++    def state_dict(self):
++        """Returns a serializable dictionary containing all the relevant
++        details from the class.
++
++        Returns:
++          state_dict (dict)
++        """
++        # Currently doesn't serialize replay buffer to save memory
++        return {
++            "dqn": self._dqn.state_dict(),
++            # "replay_buffer": self._replay_buffer,
++            "optimizer": self._optimizer.state_dict(),
++            "sync_freq": self._sync_freq,
++            "min_buffer_size": self._min_buffer_size,
++            "batch_size": self._batch_size,
++            "update_freq": self._update_freq,
++            "max_grad_norm": self._max_grad_norm,
++            "updates": self._updates,
++        }
++
++    def load_state_dict(self, state_dict):
++        self._dqn.load_state_dict(state_dict["dqn"])
++        #self._replay_buffer = state_dict["replay_buffer"]
++        self._optimizer.load_state_dict(state_dict["optimizer"])
++        self._sync_freq = state_dict["sync_freq"]
++        self._min_buffer_size = state_dict["min_buffer_size"]
++        self._batch_size = state_dict["batch_size"]
++        self._update_freq = state_dict["update_freq"]
++        self._max_grad_norm = state_dict["max_grad_norm"]
++        self._updates = state_dict["updates"]
++
++    def set_reward_relabeler(self, reward_relabeler):
++        """See DQNPolicy.reward_relabeler."""
++        self._dqn.set_reward_relabeler(reward_relabeler)
+ 
+ 
+ # TODO(evzliu): Add Policy base class
+ class DQNPolicy(nn.Module):
+-  @classmethod
+-  def from_config(cls, config, env):
+-    def embedder_factory():
+-      embedder_config = config.get("embedder")
+-      embed_type = embedder_config.get("type")
+-      if embed_type == "instruction":
+-        return embed.InstructionPolicyEmbedder.from_config(embedder_config, env)
+-      elif embed_type == "recurrent":
+-        return embed.RecurrentStateEmbedder.from_config(embedder_config, env)
+-      elif embedder_config.get("type") == "varibad":
+-        return embed.VariBADEmbedder.from_config(embedder_config, env)
+-      elif embedder_config.get("type") == "import":
+-        return embed.RecurrentAndTaskIDEmbedder.from_config(
+-            embedder_config, env)
+-      else:
+-        raise ValueError("Unsupported embedding type: {}".format(embed_type))
+-
+-    policy_type = config.get("type")
+-    if policy_type == "vanilla":
+-      pass
+-    elif policy_type == "recurrent":
+-      cls = RecurrentDQNPolicy
+-    else:
+-      raise ValueError("Unsupported policy type: {}".format(policy_type))
+-
+-    epsilon_schedule = schedule.LinearSchedule.from_config(
+-        config.get("epsilon_schedule"))
+-    return cls(env.action_space.n, epsilon_schedule, config.get("test_epsilon"),
+-               embedder_factory, config.get("discount"))
+-
+-  def __init__(self, num_actions, epsilon_schedule, test_epsilon,
+-               state_embedder_factory, gamma=0.99):
+-    """DQNPolicy should typically be constructed via from_config, and not
+-    through the constructor.
+-
+-    Args:
+-      num_actions (int): the number of possible actions to take at each
+-        state
+-      epsilon_schedule (Schedule): defines rate at which epsilon decays
+-      test_epsilon (float): epsilon to use during test time (when test is
+-        True in act)
+-      state_embedder_factory (Callable --> StateEmbedder): type of state
+-        embedder to use
+-      gamma (float): discount factor
+-    """
+-    super().__init__()
+-    self._Q = DuelingNetwork(num_actions, state_embedder_factory())
+-    self._target_Q = DuelingNetwork(num_actions, state_embedder_factory())
+-    self._num_actions = num_actions
+-    self._epsilon_schedule = epsilon_schedule
+-    self._test_epsilon = test_epsilon
+-    self._gamma = gamma
+-    self._reward_relabeler = None
+-
+-    # Used for generating statistics about the policy
+-    # Average of max Q values
+-    self._max_q = collections.deque(maxlen=1000)
+-    self._min_q = collections.deque(maxlen=1000)
+-    self._losses = collections.defaultdict(lambda: collections.deque(maxlen=1000))
+-
+-  def act(self, state, prev_hidden_state=None, test=False):
+-    """
+-    Args:
+-      state (State)
+-      test (bool): if True, takes on the test epsilon value
+-      prev_hidden_state (object | None): unused agent state.
+-      epsilon (float | None): if not None, overrides the epsilon greedy
+-      schedule with this epsilon value. Mutually exclusive with test
+-      flag
+-
+-    Returns:
+-      int: action
+-      hidden_state (None)
+-    """
+-    del prev_hidden_state
+-
+-    q_values, hidden_state = self._Q([state], None)
+-    if test:
+-      epsilon = self._test_epsilon
+-    else:
+-      epsilon = self._epsilon_schedule.step()
+-    self._max_q.append(torch.max(q_values).item())
+-    self._min_q.append(torch.min(q_values).item())
+-    return epsilon_greedy(q_values, epsilon)[0], None
+-
+-  def loss(self, experiences, weights):
+-    """Updates parameters from a batch of experiences
+-
+-    Minimizing the loss:
+-
+-      (target - Q(s, a))^2
+-
+-      target = r if done
+-           r + \gamma * max_a' Q(s', a')
+-
+-    Args:
+-      experiences (list[Experience]): batch of experiences, state and
+-        next_state may be LazyFrames or np.arrays
+-      weights (list[float]): importance weights on each experience
+-
+-    Returns:
+-      loss (torch.tensor): MSE loss on the experiences.
+-    """
+-    batch_size = len(experiences)
+-    states = [e.state for e in experiences]
+-    actions = torch.tensor([e.action for e in experiences]).long()
+-    next_states = [e.next_state for e in experiences]
+-    rewards = torch.tensor([e.reward for e in experiences]).float()
+-
+-    # (batch_size,) 1 if was not done, otherwise 0
+-    not_done_mask = torch.tensor([1 - e.done for e in experiences]).byte()
+-    weights = torch.tensor(weights).float()
+-
+-    # TODO(evzliu): Could more gracefully incorporate aux_losses
+-    current_state_q_values, aux_losses = self._Q(states, None)
+-    if isinstance(aux_losses, dict):
+-      for name, loss in aux_losses.items():
+-        self._losses[name].append(loss.detach().cpu().data.numpy())
+-    current_state_q_values = current_state_q_values.gather(
+-        1, actions.unsqueeze(1))
+-
+-    # DDQN
+-    best_actions = torch.max(self._Q(next_states, None)[0], 1)[1].unsqueeze(1)
+-    next_state_q_values = self._target_Q(next_states, None)[0].gather(
+-        1, best_actions).squeeze(1)
+-    targets = rewards + self._gamma * (
+-      next_state_q_values * not_done_mask.float())
+-    targets.detach_()  # Don't backprop through targets
+-
+-    td_error = current_state_q_values.squeeze() - targets
+-    loss = torch.mean((td_error ** 2) * weights)
+-    self._losses["td_error"].append(loss.detach().cpu().data.numpy())
+-    aux_loss = 0
+-    if isinstance(aux_losses, dict):
+-      aux_loss = sum(aux_losses.values())
+-    return loss + aux_loss
+-
+-  def sync_target(self):
+-    """Syncs the target Q values with the current Q values"""
+-    self._target_Q.load_state_dict(self._Q.state_dict())
+-
+-  def set_reward_relabeler(self, reward_relabeler):
+-    """Sets the reward relabeler when computing the loss.
+-
+-    Args:
+-      reward_relabeler (RewardLabeler)
+-
+-    Raises:
+-      ValueError: when the reward relabeler has already been set.
+-    """
+-    if self._reward_relabeler is not None:
+-      raise ValueError("Reward relabeler already set.")
+-    self._reward_relabeler = reward_relabeler
+-
+-  @property
+-  def stats(self):
+-    """See comments in constructor for more details about what these stats
+-    are"""
+-    def mean_with_default(l, default):
+-      if len(l) == 0:
+-        return default
+-      return np.mean(l)
+-
+-    stats = {
+-        "epsilon": self._epsilon_schedule.step(take_step=False),
+-        "Max Q": mean_with_default(self._max_q, None),
+-        "Min Q": mean_with_default(self._min_q, None),
+-    }
+-    for name, losses in self._losses.items():
+-      stats[name] = np.mean(losses)
+-    return stats
++    @classmethod
++    def from_config(cls, config, env):
++        def embedder_factory():
++            embedder_config = config.get("embedder")
++            embed_type = embedder_config.get("type")
++            if embed_type == "instruction":
++                return embed.InstructionPolicyEmbedder.from_config(embedder_config, env)
++            elif embed_type == "recurrent":
++                return embed.RecurrentStateEmbedder.from_config(embedder_config, env)
++            elif embedder_config.get("type") == "varibad":
++                return embed.VariBADEmbedder.from_config(embedder_config, env)
++            elif embedder_config.get("type") == "import":
++                return embed.RecurrentAndTaskIDEmbedder.from_config(
++                    embedder_config, env)
++            else:
++                raise ValueError("Unsupported embedding type: {}".format(embed_type))
++
++        policy_type = config.get("type")
++        if policy_type == "vanilla":
++            pass
++        elif policy_type == "recurrent":
++            cls = RecurrentDQNPolicy
++        else:
++            raise ValueError("Unsupported policy type: {}".format(policy_type))
++
++        epsilon_schedule = schedule.LinearSchedule.from_config(
++            config.get("epsilon_schedule"))
++        return cls(env.action_space.n, epsilon_schedule, config.get("test_epsilon"),
++                   embedder_factory, config.get("discount"))
++
++    def __init__(self, num_actions, epsilon_schedule, test_epsilon,
++                 state_embedder_factory, gamma=0.99):
++        """DQNPolicy should typically be constructed via from_config, and not
++        through the constructor.
++
++        Args:
++          num_actions (int): the number of possible actions to take at each
++            state
++          epsilon_schedule (Schedule): defines rate at which epsilon decays
++          test_epsilon (float): epsilon to use during test time (when test is
++            True in act)
++          state_embedder_factory (Callable --> StateEmbedder): type of state
++            embedder to use
++          gamma (float): discount factor
++        """
++        super().__init__()
++        self._Q = DuelingNetwork(num_actions, state_embedder_factory())
++        self._target_Q = DuelingNetwork(num_actions, state_embedder_factory())
++        self._num_actions = num_actions
++        self._epsilon_schedule = epsilon_schedule
++        self._test_epsilon = test_epsilon
++        self._gamma = gamma
++        self._reward_relabeler = None
++
++        # Used for generating statistics about the policy
++        # Average of max Q values
++        self._max_q = collections.deque(maxlen=1000)
++        self._min_q = collections.deque(maxlen=1000)
++        self._losses = collections.defaultdict(lambda: collections.deque(maxlen=1000))
++
++    def act(self, state, prev_hidden_state=None, test=False):
++        """
++        Args:
++          state (State)
++          test (bool): if True, takes on the test epsilon value
++          prev_hidden_state (object | None): unused agent state.
++          epsilon (float | None): if not None, overrides the epsilon greedy
++          schedule with this epsilon value. Mutually exclusive with test
++          flag
++
++        Returns:
++          int: action
++          hidden_state (None)
++        """
++        del prev_hidden_state
++
++        q_values, hidden_state = self._Q([state], None)
++        if test:
++            epsilon = self._test_epsilon
++        else:
++            epsilon = self._epsilon_schedule.step()
++        self._max_q.append(torch.max(q_values).item())
++        self._min_q.append(torch.min(q_values).item())
++        return epsilon_greedy(q_values, epsilon)[0], None
++
++    def loss(self, experiences, weights):
++        """Updates parameters from a batch of experiences
++
++        Minimizing the loss:
++
++          (target - Q(s, a))^2
++
++          target = r if done
++               r + \gamma * max_a' Q(s', a')
++
++        Args:
++          experiences (list[Experience]): batch of experiences, state and
++            next_state may be LazyFrames or np.arrays
++          weights (list[float]): importance weights on each experience
++
++        Returns:
++          loss (torch.tensor): MSE loss on the experiences.
++        """
++        batch_size = len(experiences)
++        states = [e.state for e in experiences]
++        actions = torch.tensor([e.action for e in experiences]).long()
++        next_states = [e.next_state for e in experiences]
++        rewards = torch.tensor([e.reward for e in experiences]).float()
++
++        # (batch_size,) 1 if was not done, otherwise 0
++        not_done_mask = torch.tensor([1 - e.done for e in experiences]).byte()
++        weights = torch.tensor(weights).float()
++
++        # TODO(evzliu): Could more gracefully incorporate aux_losses
++        current_state_q_values, aux_losses = self._Q(states, None)
++        if isinstance(aux_losses, dict):
++            for name, loss in aux_losses.items():
++                self._losses[name].append(loss.detach().cpu().data.numpy())
++        current_state_q_values = current_state_q_values.gather(
++            1, actions.unsqueeze(1))
++
++        # DDQN
++        best_actions = torch.max(self._Q(next_states, None)[0], 1)[1].unsqueeze(1)
++        next_state_q_values = self._target_Q(next_states, None)[0].gather(
++            1, best_actions).squeeze(1)
++        targets = rewards + self._gamma * (
++            next_state_q_values * not_done_mask.float())
++        targets.detach_()  # Don't backprop through targets
++
++        td_error = current_state_q_values.squeeze() - targets
++        loss = torch.mean((td_error ** 2) * weights)
++        self._losses["td_error"].append(loss.detach().cpu().data.numpy())
++        aux_loss = 0
++        if isinstance(aux_losses, dict):
++            aux_loss = sum(aux_losses.values())
++        return loss + aux_loss
++
++    def sync_target(self):
++        """Syncs the target Q values with the current Q values"""
++        self._target_Q.load_state_dict(self._Q.state_dict())
++
++    def set_reward_relabeler(self, reward_relabeler):
++        """Sets the reward relabeler when computing the loss.
++
++        Args:
++          reward_relabeler (RewardLabeler)
++
++        Raises:
++          ValueError: when the reward relabeler has already been set.
++        """
++        if self._reward_relabeler is not None:
++            raise ValueError("Reward relabeler already set.")
++        self._reward_relabeler = reward_relabeler
++
++    @property
++    def stats(self):
++        """See comments in constructor for more details about what these stats
++        are"""
++        def mean_with_default(l, default):
++            if len(l) == 0:
++                return default
++            return np.mean(l)
++
++        stats = {
++            "epsilon": self._epsilon_schedule.step(take_step=False),
++            "Max Q": mean_with_default(self._max_q, None),
++            "Min Q": mean_with_default(self._min_q, None),
++        }
++        for name, losses in self._losses.items():
++            stats[name] = np.mean(losses)
++        return stats
+ 
+ 
+ class RecurrentDQNPolicy(DQNPolicy):
+-  """Implements a DQN policy that uses an RNN on the observations."""
+-
+-  def loss(self, experiences, weights):
+-    """Updates recurrent parameters from a batch of sequential experiences
++    """Implements a DQN policy that uses an RNN on the observations."""
++
++    def loss(self, experiences, weights):
++        """Updates recurrent parameters from a batch of sequential experiences
++
++        Minimizing the DQN loss:
++
++          (target - Q(s, a))^2
++
++          target = r if done
++               r + \gamma * max_a' Q(s', a')
++
++        Args:
++          experiences (list[list[Experience]]): batch of sequences of experiences.
++          weights (list[float]): importance weights on each experience
++
++        Returns:
++          loss (torch.tensor): MSE loss on the experiences.
++        """
++        unpadded_experiences = experiences
++        experiences, mask = utils.pad(experiences)
++        batch_size = len(experiences)
++        seq_len = len(experiences[0])
++
++        hidden_states = [seq[0].agent_state for seq in experiences]
++        # Include the next states in here to minimize calls to _Q
++        states = [
++            [e.state for e in seq] + [seq[-1].next_state] for seq in experiences]
++        actions = torch.tensor(
++            [e.action for seq in experiences for e in seq]).long()
++        next_hidden_states = [seq[0].next_agent_state for seq in experiences]
++        next_states = [[e.next_state for e in seq] for seq in experiences]
++        rewards = torch.tensor(
++            [e.reward for seq in experiences for e in seq]).float()
++
++        # TODO(evzliu): Could more gracefully handle this by passing a
++        # TrajectoryExperience object to label_rewards to take TrajectoryExperience
++        # Relabel the rewards on the fly
++        if self._reward_relabeler is not None:
++            trajectories = [seq[0].trajectory for seq in experiences]
++            # (batch_size, max_seq_len)
++            indices = torch.tensor(
++                [[e.index for e in seq] for seq in experiences]).long()
++
++            # (batch_size * max_trajectory_len)
++            rewards = self._reward_relabeler.label_rewards(
++                trajectories)[0].gather(-1, indices).reshape(-1)
++
++        # (batch_size,) 1 if was not done, otherwise 0
++        not_done_mask = ~(torch.tensor(
++            [e.done for seq in experiences for e in seq]).bool())
++        weights = torch.tensor(weights).float()
++
++        # (batch_size, seq_len + 1, actions)
++        q_values, _ = self._Q(states, hidden_states)
++        current_q_values = q_values[:, :-1, :]
++        current_q_values = current_q_values.reshape(batch_size * seq_len, -1)
++        # (batch_size * seq_len, 1)
++        current_state_q_values = current_q_values.gather(1, actions.unsqueeze(1))
++
++        # TODO(evzliu): Could more gracefully incorporate aux_losses
++        aux_losses = {}
++        if hasattr(self._Q._state_embedder, "aux_loss"):
++            aux_losses = self._Q._state_embedder.aux_loss(unpadded_experiences)
++            if isinstance(aux_losses, dict):
++                for name, loss in aux_losses.items():
++                    self._losses[name].append(loss.detach().cpu().data.numpy())
++
++        # DDQN
++        next_q_values = q_values[:, 1:, :]
++        # (batch_size * seq_len, actions)
++        next_q_values = next_q_values.reshape(batch_size * seq_len, -1)
++        best_actions = torch.max(next_q_values, 1)[1].unsqueeze(1)
++        # Using the same hidden states for target
++        target_q_values, _ = self._target_Q(next_states, next_hidden_states)
++        target_q_values = target_q_values.reshape(batch_size * seq_len, -1)
++        next_state_q_values = target_q_values.gather(1, best_actions).squeeze(1)
++        targets = rewards + self._gamma * (
++            next_state_q_values * not_done_mask.float())
++        targets.detach_()  # Don't backprop through targets
++
++        td_error = current_state_q_values.squeeze() - targets
++        weights = weights.unsqueeze(1) * mask.float()
++        loss = (td_error ** 2).reshape(batch_size, seq_len) * weights
++        loss = loss.sum() / mask.sum()  # masked mean
++        return loss + sum(aux_losses.values())
++
++    def act(self, state, prev_hidden_state=None, test=False):
++        """
++        Args:
++          state (State)
++          test (bool): if True, takes on the test epsilon value
++          prev_hidden_state (object | None): unused agent state.
++          epsilon (float | None): if not None, overrides the epsilon greedy
++          schedule with this epsilon value. Mutually exclusive with test
++          flag
++
++        Returns:
++          int: action
++          hidden_state (None)
++        """
++        q_values, hidden_state = self._Q([[state]], prev_hidden_state)
++        if test:
++            epsilon = self._test_epsilon
++        else:
++            epsilon = self._epsilon_schedule.step()
++        self._max_q.append(torch.max(q_values).item())
++        self._min_q.append(torch.min(q_values).item())
++        return epsilon_greedy(q_values, epsilon)[0], hidden_state
+ 
+-    Minimizing the DQN loss:
+ 
+-      (target - Q(s, a))^2
++class DQN(nn.Module):
++    """Implements the Q-function."""
++
++    def __init__(self, num_actions, state_embedder):
++        """
++        Args:
++          num_actions (int): the number of possible actions at each state
++          state_embedder (StateEmbedder): the state embedder to use
++        """
++        super(DQN, self).__init__()
++        self._state_embedder = state_embedder
++        self._q_values = nn.Linear(self._state_embedder.embed_dim, num_actions)
++
++    def forward(self, states, hidden_states=None):
++        """Returns Q-values for each of the states.
++
++        Args:
++          states (FloatTensor): shape (batch_size, 84, 84, 4)
++          hidden_states (object | None): hidden state returned by previous call to
++            forward. Must be called on constiguous states.
++
++        Returns:
++          FloatTensor: (batch_size, num_actions)
++          hidden_state (object)
++        """
++        state_embed, hidden_state = self._state_embedder(states, hidden_states)
++        return self._q_values(state_embed), hidden_state
+ 
+-      target = r if done
+-           r + \gamma * max_a' Q(s', a')
+ 
+-    Args:
+-      experiences (list[list[Experience]]): batch of sequences of experiences.
+-      weights (list[float]): importance weights on each experience
++class DuelingNetwork(DQN):
++    """Implements the following Q-network:
+ 
+-    Returns:
+-      loss (torch.tensor): MSE loss on the experiences.
+-    """
+-    unpadded_experiences = experiences
+-    experiences, mask = utils.pad(experiences)
+-    batch_size = len(experiences)
+-    seq_len = len(experiences[0])
+-
+-    hidden_states = [seq[0].agent_state for seq in experiences]
+-    # Include the next states in here to minimize calls to _Q
+-    states = [
+-        [e.state for e in seq] + [seq[-1].next_state] for seq in experiences]
+-    actions = torch.tensor(
+-        [e.action for seq in experiences for e in seq]).long()
+-    next_hidden_states = [seq[0].next_agent_state for seq in experiences]
+-    next_states = [[e.next_state for e in seq] for seq in experiences]
+-    rewards = torch.tensor(
+-        [e.reward for seq in experiences for e in seq]).float()
+-
+-    # TODO(evzliu): Could more gracefully handle this by passing a
+-    # TrajectoryExperience object to label_rewards to take TrajectoryExperience
+-    # Relabel the rewards on the fly
+-    if self._reward_relabeler is not None:
+-      trajectories = [seq[0].trajectory for seq in experiences]
+-      # (batch_size, max_seq_len)
+-      indices = torch.tensor(
+-          [[e.index for e in seq] for seq in experiences]).long()
+-
+-      # (batch_size * max_trajectory_len)
+-      rewards = self._reward_relabeler.label_rewards(
+-          trajectories)[0].gather(-1, indices).reshape(-1)
+-
+-    # (batch_size,) 1 if was not done, otherwise 0
+-    not_done_mask = ~(torch.tensor(
+-        [e.done for seq in experiences for e in seq]).bool())
+-    weights = torch.tensor(weights).float()
+-
+-    # (batch_size, seq_len + 1, actions)
+-    q_values, _ = self._Q(states, hidden_states)
+-    current_q_values = q_values[:, :-1, :]
+-    current_q_values = current_q_values.reshape(batch_size * seq_len, -1)
+-    # (batch_size * seq_len, 1)
+-    current_state_q_values = current_q_values.gather(1, actions.unsqueeze(1))
+-
+-    # TODO(evzliu): Could more gracefully incorporate aux_losses
+-    aux_losses = {}
+-    if hasattr(self._Q._state_embedder, "aux_loss"):
+-      aux_losses = self._Q._state_embedder.aux_loss(unpadded_experiences)
+-      if isinstance(aux_losses, dict):
+-        for name, loss in aux_losses.items():
+-          self._losses[name].append(loss.detach().cpu().data.numpy())
+-
+-    # DDQN
+-    next_q_values = q_values[:, 1:, :]
+-    # (batch_size * seq_len, actions)
+-    next_q_values = next_q_values.reshape(batch_size * seq_len, -1)
+-    best_actions = torch.max(next_q_values, 1)[1].unsqueeze(1)
+-    # Using the same hidden states for target
+-    target_q_values, _ = self._target_Q(next_states, next_hidden_states)
+-    target_q_values = target_q_values.reshape(batch_size * seq_len, -1)
+-    next_state_q_values = target_q_values.gather(1, best_actions).squeeze(1)
+-    targets = rewards + self._gamma * (
+-        next_state_q_values * not_done_mask.float())
+-    targets.detach_()  # Don't backprop through targets
+-
+-    td_error = current_state_q_values.squeeze() - targets
+-    weights = weights.unsqueeze(1) * mask.float()
+-    loss = (td_error ** 2).reshape(batch_size, seq_len) * weights
+-    loss = loss.sum() / mask.sum()  # masked mean
+-    return loss + sum(aux_losses.values())
+-
+-  def act(self, state, prev_hidden_state=None, test=False):
++      Q(s, a) = V(s) + A(s, a) - avg_a' A(s, a')
+     """
+-    Args:
+-      state (State)
+-      test (bool): if True, takes on the test epsilon value
+-      prev_hidden_state (object | None): unused agent state.
+-      epsilon (float | None): if not None, overrides the epsilon greedy
+-      schedule with this epsilon value. Mutually exclusive with test
+-      flag
+ 
+-    Returns:
+-      int: action
+-      hidden_state (None)
+-    """
+-    q_values, hidden_state = self._Q([[state]], prev_hidden_state)
+-    if test:
+-      epsilon = self._test_epsilon
+-    else:
+-      epsilon = self._epsilon_schedule.step()
+-    self._max_q.append(torch.max(q_values).item())
+-    self._min_q.append(torch.min(q_values).item())
+-    return epsilon_greedy(q_values, epsilon)[0], hidden_state
++    def __init__(self, num_actions, state_embedder):
++        super(DuelingNetwork, self).__init__(num_actions, state_embedder)
++        self._V = nn.Linear(self._state_embedder.embed_dim, 1)
++        self._A = nn.Linear(self._state_embedder.embed_dim, num_actions)
+ 
++    def forward(self, states, hidden_states=None):
++        state_embedding, hidden_state = self._state_embedder(states, hidden_states)
++        V = self._V(state_embedding)
++        advantage = self._A(state_embedding)
++        mean_advantage = torch.mean(advantage)
++        return V + advantage - mean_advantage, hidden_state
+ 
+-class DQN(nn.Module):
+-  """Implements the Q-function."""
+-  def __init__(self, num_actions, state_embedder):
+-    """
+-    Args:
+-      num_actions (int): the number of possible actions at each state
+-      state_embedder (StateEmbedder): the state embedder to use
+-    """
+-    super(DQN, self).__init__()
+-    self._state_embedder = state_embedder
+-    self._q_values = nn.Linear(self._state_embedder.embed_dim, num_actions)
+ 
+-  def forward(self, states, hidden_states=None):
+-    """Returns Q-values for each of the states.
++def epsilon_greedy(q_values, epsilon):
++    """Returns the index of the highest q value with prob 1 - epsilon,
++    otherwise uniformly at random with prob epsilon.
+ 
+     Args:
+-      states (FloatTensor): shape (batch_size, 84, 84, 4)
+-      hidden_states (object | None): hidden state returned by previous call to
+-        forward. Must be called on constiguous states.
++      q_values (Variable[FloatTensor]): (batch_size, num_actions)
++      epsilon (float)
+ 
+     Returns:
+-      FloatTensor: (batch_size, num_actions)
+-      hidden_state (object)
++      list[int]: actions
+     """
+-    state_embed, hidden_state = self._state_embedder(states, hidden_states)
+-    return self._q_values(state_embed), hidden_state
+-
+-
+-class DuelingNetwork(DQN):
+-  """Implements the following Q-network:
+-
+-    Q(s, a) = V(s) + A(s, a) - avg_a' A(s, a')
+-  """
+-  def __init__(self, num_actions, state_embedder):
+-    super(DuelingNetwork, self).__init__(num_actions, state_embedder)
+-    self._V = nn.Linear(self._state_embedder.embed_dim, 1)
+-    self._A = nn.Linear(self._state_embedder.embed_dim, num_actions)
+-
+-  def forward(self, states, hidden_states=None):
+-    state_embedding, hidden_state = self._state_embedder(states, hidden_states)
+-    V = self._V(state_embedding)
+-    advantage = self._A(state_embedding)
+-    mean_advantage = torch.mean(advantage)
+-    return V + advantage - mean_advantage, hidden_state
+-
+-
+-def epsilon_greedy(q_values, epsilon):
+-  """Returns the index of the highest q value with prob 1 - epsilon,
+-  otherwise uniformly at random with prob epsilon.
+-
+-  Args:
+-    q_values (Variable[FloatTensor]): (batch_size, num_actions)
+-    epsilon (float)
+-
+-  Returns:
+-    list[int]: actions
+-  """
+-  batch_size, num_actions = q_values.size()
+-  _, max_indices = torch.max(q_values, 1)
+-  max_indices = max_indices.cpu().data.numpy()
+-  actions = []
+-  for i in range(batch_size):
+-    if np.random.random() > epsilon:
+-      actions.append(max_indices[i])
+-    else:
+-      actions.append(np.random.randint(0, num_actions))
+-  return actions
++    batch_size, num_actions = q_values.size()
++    _, max_indices = torch.max(q_values, 1)
++    max_indices = max_indices.cpu().data.numpy()
++    actions = []
++    for i in range(batch_size):
++        if np.random.random() > epsilon:
++            actions.append(max_indices[i])
++        else:
++            actions.append(np.random.randint(0, num_actions))
++    return actions
+
+---
+
+embed.py
+=======================================================
+lhs: 100644 | 00d38d566cc2c398cccfa053bcb8f6f610aed515
+rhs: 100644 | e2bb3f46c2e17a4c0aea79b686270888eb9e6dd5
+---@@ -1,757 +1,757 @@
+ import abc
+ import collections
++
+ import numpy as np
++import relabel
+ import torch
+-from torch import nn
++import utils
++from envs import grid
+ from torch import distributions as td
++from torch import nn
+ from torch.nn import functional as F
+ 
+-from envs import grid
+-import relabel
+-import utils
+-
+ 
+ class Embedder(abc.ABC, nn.Module):
+-  """Defines the embedding of an object in the forward method.
++    """Defines the embedding of an object in the forward method.
+ 
+-  Subclasses should register to the from_config method.
+-  """
+-
+-  def __init__(self, embed_dim):
+-    """Sets the embed dim.
+-
+-    Args:
+-      embed_dim (int): the dimension of the outputted embedding.
++    Subclasses should register to the from_config method.
+     """
+-    super().__init__()
+-    self._embed_dim = embed_dim
+-
+-  @property
+-  def embed_dim(self):
+-    """Returns the dimension of the output (int)."""
+-    return self._embed_dim
+ 
+-  @classmethod
+-  def from_config(cls, config):
+-    """Constructs and returns Embedder from config.
+-
+-    Args:
+-      config (Config): parameters for constructing the Embedder.
+-
+-    Returns:
+-      Embedder
+-    """
+-    config_type = config.get("type")
+-    if config_type == "simple_grid_state":
+-      return SimpleGridStateEmbedder.from_config(config)
+-    elif config_type == "fixed_vocab":
+-      return FixedVocabEmbedder.from_config(config)
+-    elif config_type == "linear":
+-      return LinearEmbedder.from_config(config)
+-    else:
+-      raise ValueError("Config type {} not supported".format(config_type))
++    def __init__(self, embed_dim):
++        """Sets the embed dim.
++
++        Args:
++          embed_dim (int): the dimension of the outputted embedding.
++        """
++        super().__init__()
++        self._embed_dim = embed_dim
++
++    @property
++    def embed_dim(self):
++        """Returns the dimension of the output (int)."""
++        return self._embed_dim
++
++    @classmethod
++    def from_config(cls, config):
++        """Constructs and returns Embedder from config.
++
++        Args:
++          config (Config): parameters for constructing the Embedder.
++
++        Returns:
++          Embedder
++        """
++        config_type = config.get("type")
++        if config_type == "simple_grid_state":
++            return SimpleGridStateEmbedder.from_config(config)
++        elif config_type == "fixed_vocab":
++            return FixedVocabEmbedder.from_config(config)
++        elif config_type == "linear":
++            return LinearEmbedder.from_config(config)
++        else:
++            raise ValueError("Config type {} not supported".format(config_type))
+ 
+ 
+ def get_state_embedder(env):
+-  """Returns the appropriate type of embedder given the environment type."""
+-  env = env.unwrapped
+-  if isinstance(env.unwrapped, grid.GridEnv):
+-    return SimpleGridStateEmbedder
++    """Returns the appropriate type of embedder given the environment type."""
++    env = env.unwrapped
++    if isinstance(env.unwrapped, grid.GridEnv):
++        return SimpleGridStateEmbedder
+ 
+-  # Dependencies on OpenGL, so only load if absolutely necessary
+-  from envs.miniworld import sign
+-  if isinstance(env, sign.MiniWorldSign):
+-    return MiniWorldEmbedder
++    # Dependencies on OpenGL, so only load if absolutely necessary
++    from envs.miniworld import sign
++    if isinstance(env, sign.MiniWorldSign):
++        return MiniWorldEmbedder
+ 
+-  raise ValueError()
++    raise ValueError()
+ 
+ 
+ class TransitionEmbedder(Embedder):
+-  def __init__(self, state_embedder, action_embedder, reward_embedder, embed_dim):
+-    super().__init__(embed_dim)
+-
+-    self._state_embedder = state_embedder
+-    self._action_embedder = action_embedder
+-    self._reward_embedder = reward_embedder
+-    reward_embed_dim = (
+-        0 if reward_embedder is None else reward_embedder.embed_dim)
+-
+-    self._transition_embedder = nn.Sequential(
+-        nn.Linear(
+-          self._state_embedder.embed_dim * 2 +
+-          self._action_embedder.embed_dim + reward_embed_dim,
+-          128),
+-        nn.ReLU(),
+-        nn.Linear(128, embed_dim)
+-    )
+-
+-  def forward(self, experiences):
+-    state_embeds = self._state_embedder(
+-        [exp.state.observation for exp in experiences])
+-    next_state_embeds = self._state_embedder(
+-        [exp.next_state.observation for exp in experiences])
+-    action_embeds = self._action_embedder([exp.action for exp in experiences])
+-    embeddings = [state_embeds, next_state_embeds, action_embeds]
+-    if self._reward_embedder is not None:
+-      embeddings.append(self._reward_embedder(
+-          [exp.next_state.prev_reward for exp in experiences]))
+-    transition_embeds = self._transition_embedder(torch.cat(embeddings, -1))
+-    return transition_embeds
+-
+-  @classmethod
+-  def from_config(cls, config, env):
+-    state_embedder = get_state_embedder(env)(
+-        env.observation_space["observation"],
+-        config.get("experience_embedder").get("state_embed_dim"))
+-    action_embedder = FixedVocabEmbedder(
+-        env.action_space.n,
+-        config.get("experience_embedder").get("action_embedder").get("embed_dim"))
+-    return cls(state_embedder, action_embedder, config.get("embed_dim"))
++    def __init__(self, state_embedder, action_embedder, reward_embedder, embed_dim):
++        super().__init__(embed_dim)
++
++        self._state_embedder = state_embedder
++        self._action_embedder = action_embedder
++        self._reward_embedder = reward_embedder
++        reward_embed_dim = (
++            0 if reward_embedder is None else reward_embedder.embed_dim)
++
++        self._transition_embedder = nn.Sequential(
++            nn.Linear(
++                self._state_embedder.embed_dim * 2 +
++                self._action_embedder.embed_dim + reward_embed_dim,
++                128),
++            nn.ReLU(),
++            nn.Linear(128, embed_dim)
++        )
++
++    def forward(self, experiences):
++        state_embeds = self._state_embedder(
++            [exp.state.observation for exp in experiences])
++        next_state_embeds = self._state_embedder(
++            [exp.next_state.observation for exp in experiences])
++        action_embeds = self._action_embedder([exp.action for exp in experiences])
++        embeddings = [state_embeds, next_state_embeds, action_embeds]
++        if self._reward_embedder is not None:
++            embeddings.append(self._reward_embedder(
++                [exp.next_state.prev_reward for exp in experiences]))
++        transition_embeds = self._transition_embedder(torch.cat(embeddings, -1))
++        return transition_embeds
++
++    @classmethod
++    def from_config(cls, config, env):
++        state_embedder = get_state_embedder(env)(
++            env.observation_space["observation"],
++            config.get("experience_embedder").get("state_embed_dim"))
++        action_embedder = FixedVocabEmbedder(
++            env.action_space.n,
++            config.get("experience_embedder").get("action_embedder").get("embed_dim"))
++        return cls(state_embedder, action_embedder, config.get("embed_dim"))
+ 
+ 
+ class TrajectoryEmbedder(Embedder, relabel.RewardLabeler):
+-  def __init__(self, transition_embedder, id_embedder, penalty, embed_dim):
+-    super().__init__(embed_dim)
+-
+-    self._transition_embedder = transition_embedder
+-    self._id_embedder = id_embedder
+-    self._transition_lstm = nn.LSTM(transition_embedder.embed_dim, 128)
+-    self._transition_fc_layer = nn.Linear(128, 128)
+-    self._transition_output_layer = nn.Linear(128, embed_dim)
+-    self._penalty = penalty
+-    self._use_ids = True
+-
+-  def use_ids(self, use):
+-    self._use_ids = use
+-
+-  def _compute_contexts(self, trajectories):
+-    """Returns contexts and masks.
+-
+-    Args:
+-      trajectories (list[list[Experience]]): see forward().
+-
+-    Returns:
+-      id_contexts (torch.FloatTensor): tensor of shape (batch_size, embed_dim)
+-        embedding the id's in the trajectories.
+-      all_transition_contexts (torch.FloatTensor): tensor of shape
+-        (batch_size, max_len + 1, embed_dim) embedding the sequences of states
+-        and actions in the trajectories.
+-      transition_contexts (torch.FloatTensor): tensor of shape
+-        (batch_size, embed_dim) equal to the last unpadded value in
+-        all_transition_contexts.
+-      mask (torch.BoolTensor): tensor of shape (batch_size, max_len + 1).
+-        The value is False if the trajectory_contexts value should be masked.
+-    """
+-    # trajectories: (batch_size, max_len)
+-    # mask: (batch_size, max_len)
+-    padded_trajectories, mask = utils.pad(trajectories)
+-    sequence_lengths = torch.tensor([len(traj) for traj in trajectories]).long()
+-
+-    # (batch_size * max_len, embed_dim)
+-    transition_embed = self._transition_embedder(
+-        [exp for traj in padded_trajectories for exp in traj])
+-
+-    # pack_padded_sequence relies on the default tensor type not
+-    # being a CUDA tensor.
+-    # TODO(evzliu): Could thread the device management w/o modifying default
+-    # tensor type
+-    torch.set_default_tensor_type(torch.FloatTensor)
+-    # Sorted only required for ONNX
+-    padded_transitions = nn.utils.rnn.pack_padded_sequence(
+-        transition_embed.reshape(mask.shape[0], mask.shape[1], -1),
+-        sequence_lengths, batch_first=True, enforce_sorted=False)
+-    if torch.cuda.is_available():
+-      torch.set_default_tensor_type(torch.cuda.FloatTensor)
+-
+-    transition_hidden_states = self._transition_lstm(padded_transitions)[0]
+-    # (batch_size, max_len, hidden_dim)
+-    transition_hidden_states, hidden_lengths = nn.utils.rnn.pad_packed_sequence(
+-        transition_hidden_states, batch_first=True)
+-    initial_hidden_states = torch.zeros(
+-        transition_hidden_states.shape[0], 1,
+-        transition_hidden_states.shape[-1])
+-    # (batch_size, max_len + 1, hidden_dim)
+-    transition_hidden_states = torch.cat(
+-        (initial_hidden_states, transition_hidden_states), 1)
+-    transition_hidden_states = F.relu(
+-        self._transition_fc_layer(transition_hidden_states))
+-    # (batch_size, max_len + 1, embed_dim)
+-    all_transition_contexts = self._transition_output_layer(
+-        transition_hidden_states)
+-
+-    # (batch_size, 1, embed_dim)
+-    # Don't need to subtract 1 off of hidden_lengths as transition_contexts is
+-    # padded with init hidden state at the beginning.
+-    indices = hidden_lengths.unsqueeze(-1).unsqueeze(-1).expand(
+-        hidden_lengths.shape[0], 1, all_transition_contexts.shape[2]).to(
+-            all_transition_contexts.device)
+-    transition_contexts = all_transition_contexts.gather(1, indices).squeeze(1)
+-
+-    # (batch_size, embed_dim)
+-    id_contexts = self._id_embedder(
+-        torch.tensor([traj[0].state.env_id for traj in trajectories]))
+-
+-    # don't mask the initial hidden states (batch_size, max_len + 1)
+-    mask = torch.cat(
+-        (torch.ones(transition_contexts.shape[0], 1).bool(), mask), -1)
+-    return id_contexts, all_transition_contexts, transition_contexts, mask
+-
+-  def _compute_losses(
+-      self, trajectories, id_contexts, all_transition_contexts,
+-      transition_contexts, mask):
+-    """Computes losses based on the return values of _compute_contexts.
+-
+-    Args:
+-      See return values of _compute_contexts.
+-
+-    Returns:
+-      losses (dict(str: torch.FloatTensor)): see forward().
+-    """
+-    del trajectories
+-
+-    transition_context_loss = (
+-        (all_transition_contexts - id_contexts.unsqueeze(1).expand_as(
+-         all_transition_contexts).detach()) ** 2).sum(-1)
+-    transition_context_loss = (
+-        transition_context_loss * mask).sum() / mask.sum()
+-
+-    cutoff = torch.ones(id_contexts.shape[0]) * 10
+-    losses = {
+-      "transition_context_loss": transition_context_loss,
+-      "id_context_loss": torch.max((id_contexts ** 2).sum(-1), cutoff).mean()
+-    }
+-    return losses
+-
+-  def forward(self, trajectories):
+-    """Embeds a batch of trajectories.
+-
+-    Args:
+-      trajectories (list[list[Experience]]): batch of trajectories, where each
+-        trajectory comes from the same episode.
+-
+-    Returns:
+-      embedding (torch.FloatTensor): tensor of shape (batch_size, embed_dim)
+-        embedding the trajectories. This embedding is based on the ids if
+-        use_ids is True, otherwise based on the transitions.
+-      losses (dict(str: torch.FloatTensor)): maps auxiliary loss names to their
+-        values.
+-    """
+-    id_contexts, all_transition_contexts, transition_contexts, mask = (
+-        self._compute_contexts(trajectories))
+-    contexts = (id_contexts + 0.1 * torch.randn_like(id_contexts)
+-                if self._use_ids else transition_contexts)
+-
+-    losses = self._compute_losses(
+-        trajectories, id_contexts, all_transition_contexts,
+-        transition_contexts, mask)
+-    return contexts, losses
+-
+-  def label_rewards(self, trajectories):
+-    """Computes rewards for each experience in the trajectory.
+-
+-    Args:
+-      trajectories (list[list[Experience]]): batch of trajectories.
+-
+-    Returns:
+-      rewards (torch.FloatTensor): of shape (batch_size, max_seq_len) where
+-        rewards[i][j] is the rewards for the experience trajectories[i][j].
+-        This is padded with zeros and is detached from the graph.
+-      distances (torch.FloatTensor): of shape (batch_size, max_seq_len + 1)
+-        equal to ||f(e) - g(\tau^e_{:t})|| for each t.
+-    """
+-    id_contexts, all_transition_contexts, _, mask = self._compute_contexts(
+-        trajectories)
+-
+-    distances = (
+-        (all_transition_contexts - id_contexts.unsqueeze(1).expand_as(
+-         all_transition_contexts).detach()) ** 2).sum(-1)
+-    # Add penalty
+-    rewards = distances[:, :-1] - distances[:, 1:] - self._penalty
+-    return (rewards * mask[:, 1:]).detach(), distances
++    def __init__(self, transition_embedder, id_embedder, penalty, embed_dim):
++        super().__init__(embed_dim)
++
++        self._transition_embedder = transition_embedder
++        self._id_embedder = id_embedder
++        self._transition_lstm = nn.LSTM(transition_embedder.embed_dim, 128)
++        self._transition_fc_layer = nn.Linear(128, 128)
++        self._transition_output_layer = nn.Linear(128, embed_dim)
++        self._penalty = penalty
++        self._use_ids = True
++
++    def use_ids(self, use):
++        self._use_ids = use
++
++    def _compute_contexts(self, trajectories):
++        """Returns contexts and masks.
++
++        Args:
++          trajectories (list[list[Experience]]): see forward().
++
++        Returns:
++          id_contexts (torch.FloatTensor): tensor of shape (batch_size, embed_dim)
++            embedding the id's in the trajectories.
++          all_transition_contexts (torch.FloatTensor): tensor of shape
++            (batch_size, max_len + 1, embed_dim) embedding the sequences of states
++            and actions in the trajectories.
++          transition_contexts (torch.FloatTensor): tensor of shape
++            (batch_size, embed_dim) equal to the last unpadded value in
++            all_transition_contexts.
++          mask (torch.BoolTensor): tensor of shape (batch_size, max_len + 1).
++            The value is False if the trajectory_contexts value should be masked.
++        """
++        # trajectories: (batch_size, max_len)
++        # mask: (batch_size, max_len)
++        padded_trajectories, mask = utils.pad(trajectories)
++        sequence_lengths = torch.tensor([len(traj) for traj in trajectories]).long()
++
++        # (batch_size * max_len, embed_dim)
++        transition_embed = self._transition_embedder(
++            [exp for traj in padded_trajectories for exp in traj])
++
++        # pack_padded_sequence relies on the default tensor type not
++        # being a CUDA tensor.
++        # TODO(evzliu): Could thread the device management w/o modifying default
++        # tensor type
++        torch.set_default_tensor_type(torch.FloatTensor)
++        # Sorted only required for ONNX
++        padded_transitions = nn.utils.rnn.pack_padded_sequence(
++            transition_embed.reshape(mask.shape[0], mask.shape[1], -1),
++            sequence_lengths.cpu(), batch_first=True, enforce_sorted=False)
++        if torch.cuda.is_available():
++            torch.set_default_tensor_type(torch.cuda.FloatTensor)
++
++        transition_hidden_states = self._transition_lstm(padded_transitions)[0]
++        # (batch_size, max_len, hidden_dim)
++        transition_hidden_states, hidden_lengths = nn.utils.rnn.pad_packed_sequence(
++            transition_hidden_states, batch_first=True)
++        initial_hidden_states = torch.zeros(
++            transition_hidden_states.shape[0], 1,
++            transition_hidden_states.shape[-1])
++        # (batch_size, max_len + 1, hidden_dim)
++        transition_hidden_states = torch.cat(
++            (initial_hidden_states, transition_hidden_states), 1)
++        transition_hidden_states = F.relu(
++            self._transition_fc_layer(transition_hidden_states))
++        # (batch_size, max_len + 1, embed_dim)
++        all_transition_contexts = self._transition_output_layer(
++            transition_hidden_states)
++
++        # (batch_size, 1, embed_dim)
++        # Don't need to subtract 1 off of hidden_lengths as transition_contexts is
++        # padded with init hidden state at the beginning.
++        indices = hidden_lengths.unsqueeze(-1).unsqueeze(-1).expand(
++            hidden_lengths.shape[0], 1, all_transition_contexts.shape[2]).to(
++                all_transition_contexts.device)
++        transition_contexts = all_transition_contexts.gather(1, indices).squeeze(1)
++
++        # (batch_size, embed_dim)
++        id_contexts = self._id_embedder(
++            torch.tensor([traj[0].state.env_id for traj in trajectories]))
++
++        # don't mask the initial hidden states (batch_size, max_len + 1)
++        mask = torch.cat(
++            (torch.ones(transition_contexts.shape[0], 1).bool(), mask), -1)
++        return id_contexts, all_transition_contexts, transition_contexts, mask
++
++    def _compute_losses(
++            self, trajectories, id_contexts, all_transition_contexts,
++            transition_contexts, mask):
++        """Computes losses based on the return values of _compute_contexts.
++
++        Args:
++          See return values of _compute_contexts.
++
++        Returns:
++          losses (dict(str: torch.FloatTensor)): see forward().
++        """
++        del trajectories
++
++        transition_context_loss = (
++            (all_transition_contexts - id_contexts.unsqueeze(1).expand_as(
++             all_transition_contexts).detach()) ** 2).sum(-1)
++        transition_context_loss = (
++            transition_context_loss * mask).sum() / mask.sum()
++
++        cutoff = torch.ones(id_contexts.shape[0]) * 10
++        losses = {
++            "transition_context_loss": transition_context_loss,
++            "id_context_loss": torch.max((id_contexts ** 2).sum(-1), cutoff).mean()
++        }
++        return losses
++
++    def forward(self, trajectories):
++        """Embeds a batch of trajectories.
++
++        Args:
++          trajectories (list[list[Experience]]): batch of trajectories, where each
++            trajectory comes from the same episode.
++
++        Returns:
++          embedding (torch.FloatTensor): tensor of shape (batch_size, embed_dim)
++            embedding the trajectories. This embedding is based on the ids if
++            use_ids is True, otherwise based on the transitions.
++          losses (dict(str: torch.FloatTensor)): maps auxiliary loss names to their
++            values.
++        """
++        id_contexts, all_transition_contexts, transition_contexts, mask = (
++            self._compute_contexts(trajectories))
++        contexts = (id_contexts + 0.1 * torch.randn_like(id_contexts)
++                    if self._use_ids else transition_contexts)
++
++        losses = self._compute_losses(
++            trajectories, id_contexts, all_transition_contexts,
++            transition_contexts, mask)
++        return contexts, losses
++
++    def label_rewards(self, trajectories):
++        """Computes rewards for each experience in the trajectory.
++
++        Args:
++          trajectories (list[list[Experience]]): batch of trajectories.
++
++        Returns:
++          rewards (torch.FloatTensor): of shape (batch_size, max_seq_len) where
++            rewards[i][j] is the rewards for the experience trajectories[i][j].
++            This is padded with zeros and is detached from the graph.
++          distances (torch.FloatTensor): of shape (batch_size, max_seq_len + 1)
++            equal to ||f(e) - g(\tau^e_{:t})|| for each t.
++        """
++        id_contexts, all_transition_contexts, _, mask = self._compute_contexts(
++            trajectories)
++
++        distances = (
++            (all_transition_contexts - id_contexts.unsqueeze(1).expand_as(
++             all_transition_contexts).detach()) ** 2).sum(-1)
++        # Add penalty
++        rewards = distances[:, :-1] - distances[:, 1:] - self._penalty
++        return (rewards * mask[:, 1:]).detach(), distances
+ 
+ 
+ class InstructionPolicyEmbedder(Embedder):
+-  """Embeds (s, i, \tau^e) where:
+-
+-    - s is the current state
+-    - i is the current instruction
+-    - \tau^e is an exploration trajectory (s_0, a_0, s_1, ..., s_T)
+-  """
+-
+-  def __init__(self, trajectory_embedder, obs_embedder, instruction_embedder,
+-               embed_dim):
+-    """Constructs around embedders for each component.
+-
+-    Args:
+-      trajectory_embedder (TrajectoryEmbedder): embeds batches of \tau^e
+-        (list[list[rl.Experience]]).
+-      obs_embedder (Embedder): embeds batches of states s.
+-      instruction_embedder (Embedder): embeds batches of instructions i.
+-      embed_dim (int): see Embedder.
+-    """
+-    super().__init__(embed_dim)
+-
+-    self._obs_embedder = obs_embedder
+-    self._instruction_embedder = instruction_embedder
+-    self._trajectory_embedder = trajectory_embedder
+-    self._fc_layer = nn.Linear(
+-        obs_embedder.embed_dim + self._trajectory_embedder.embed_dim, 256)
+-    self._final_layer = nn.Linear(256, embed_dim)
+-
+-  def forward(self, states, hidden_state):
+-    obs_embed, hidden_state = self._obs_embedder(states, hidden_state)
+-    trajectory_embed, _ = self._trajectory_embedder(
+-        [state[0].trajectory for state in states])
+-
+-    if len(obs_embed.shape) > 2:
+-      trajectory_embed = trajectory_embed.unsqueeze(1).expand(
+-          -1, obs_embed.shape[1], -1)
+-
+-    hidden = F.relu(self._fc_layer(
+-        torch.cat((obs_embed, trajectory_embed), -1)))
+-    return self._final_layer(hidden), hidden_state
+-
+-  def aux_loss(self, experiences):
+-    _, aux_losses = self._trajectory_embedder(
+-        [exp[0].state.trajectory for exp in experiences])
+-    return aux_losses
+-
+-  @classmethod
+-  def from_config(cls, config, env):
+-    """Returns a configured InstructionPolicyEmbedder.
+-
+-    Args:
+-      config (Config): see Embedder.from_config.
+-      env (gym.Wrapper): the environment to run on. Expects this to be wrapped
+-        with an InstructionWrapper.
+-
+-    Returns:
+-      InstructionPolicyEmbedder: configured according to config.
++    """Embeds (s, i, \tau^e) where:
++
++      - s is the current state
++      - i is the current instruction
++      - \tau^e is an exploration trajectory (s_0, a_0, s_1, ..., s_T)
+     """
+-    obs_embedder = get_state_embedder(env)(
+-        env.observation_space["observation"],
+-        config.get("obs_embedder").get("embed_dim"))
+-    # Use SimpleGridEmbeder since these are just discrete vars
+-    instruction_embedder = SimpleGridStateEmbedder(
+-        env.observation_space["instructions"],
+-        config.get("instruction_embedder").get("embed_dim"))
+-    # Exploitation recurrence is not observing the rewards
+-    exp_embedder = ExperienceEmbedder(
+-        obs_embedder, instruction_embedder, None, None, None,
+-        obs_embedder.embed_dim)
+-    obs_embedder = RecurrentStateEmbedder(exp_embedder, obs_embedder.embed_dim)
+-
+-    transition_config = config.get("transition_embedder")
+-    state_embedder = get_state_embedder(env)(
+-        env.observation_space["observation"],
+-        transition_config.get("state_embed_dim"))
+-    action_embedder = FixedVocabEmbedder(
+-        env.action_space.n, transition_config.get("action_embed_dim"))
+-    reward_embedder = None
+-    if transition_config.get("reward_embed_dim") is not None:
+-      reward_embedder = LinearEmbedder(
+-          1, transition_config.get("reward_embed_dim"))
+-    transition_embedder = TransitionEmbedder(
+-        state_embedder, action_embedder, reward_embedder,
+-        transition_config.get("embed_dim"))
+-    id_embedder = IDEmbedder(
+-        env.observation_space["env_id"].high,
+-        config.get("transition_embedder").get("embed_dim"))
+-    if config.get("trajectory_embedder").get("type") == "ours":
+-      trajectory_embedder = TrajectoryEmbedder(
+-          transition_embedder, id_embedder,
+-          config.get("trajectory_embedder").get("penalty"),
+-          transition_embedder.embed_dim)
+-    else:
+-      raise ValueError("Unsupported trajectory embedder {}".format(
+-        config.get("trajectory_embedder")))
+-    return cls(trajectory_embedder, obs_embedder, instruction_embedder,
+-               config.get("embed_dim"))
++
++    def __init__(self, trajectory_embedder, obs_embedder, instruction_embedder,
++                 embed_dim):
++        """Constructs around embedders for each component.
++
++        Args:
++          trajectory_embedder (TrajectoryEmbedder): embeds batches of \tau^e
++            (list[list[rl.Experience]]).
++          obs_embedder (Embedder): embeds batches of states s.
++          instruction_embedder (Embedder): embeds batches of instructions i.
++          embed_dim (int): see Embedder.
++        """
++        super().__init__(embed_dim)
++
++        self._obs_embedder = obs_embedder
++        self._instruction_embedder = instruction_embedder
++        self._trajectory_embedder = trajectory_embedder
++        self._fc_layer = nn.Linear(
++            obs_embedder.embed_dim + self._trajectory_embedder.embed_dim, 256)
++        self._final_layer = nn.Linear(256, embed_dim)
++
++    def forward(self, states, hidden_state):
++        obs_embed, hidden_state = self._obs_embedder(states, hidden_state)
++        trajectory_embed, _ = self._trajectory_embedder(
++            [state[0].trajectory for state in states])
++
++        if len(obs_embed.shape) > 2:
++            trajectory_embed = trajectory_embed.unsqueeze(1).expand(
++                -1, obs_embed.shape[1], -1)
++
++        hidden = F.relu(self._fc_layer(
++            torch.cat((obs_embed, trajectory_embed), -1)))
++        return self._final_layer(hidden), hidden_state
++
++    def aux_loss(self, experiences):
++        _, aux_losses = self._trajectory_embedder(
++            [exp[0].state.trajectory for exp in experiences])
++        return aux_losses
++
++    @classmethod
++    def from_config(cls, config, env):
++        """Returns a configured InstructionPolicyEmbedder.
++
++        Args:
++          config (Config): see Embedder.from_config.
++          env (gym.Wrapper): the environment to run on. Expects this to be wrapped
++            with an InstructionWrapper.
++
++        Returns:
++          InstructionPolicyEmbedder: configured according to config.
++        """
++        obs_embedder = get_state_embedder(env)(
++            env.observation_space["observation"],
++            config.get("obs_embedder").get("embed_dim"))
++        # Use SimpleGridEmbeder since these are just discrete vars
++        instruction_embedder = SimpleGridStateEmbedder(
++            env.observation_space["instructions"],
++            config.get("instruction_embedder").get("embed_dim"))
++        # Exploitation recurrence is not observing the rewards
++        exp_embedder = ExperienceEmbedder(
++            obs_embedder, instruction_embedder, None, None, None,
++            obs_embedder.embed_dim)
++        obs_embedder = RecurrentStateEmbedder(exp_embedder, obs_embedder.embed_dim)
++
++        transition_config = config.get("transition_embedder")
++        state_embedder = get_state_embedder(env)(
++            env.observation_space["observation"],
++            transition_config.get("state_embed_dim"))
++        action_embedder = FixedVocabEmbedder(
++            env.action_space.n, transition_config.get("action_embed_dim"))
++        reward_embedder = None
++        if transition_config.get("reward_embed_dim") is not None:
++            reward_embedder = LinearEmbedder(
++                1, transition_config.get("reward_embed_dim"))
++        transition_embedder = TransitionEmbedder(
++            state_embedder, action_embedder, reward_embedder,
++            transition_config.get("embed_dim"))
++        id_embedder = IDEmbedder(
++            env.observation_space["env_id"].high,
++            config.get("transition_embedder").get("embed_dim"))
++        if config.get("trajectory_embedder").get("type") == "ours":
++            trajectory_embedder = TrajectoryEmbedder(
++                transition_embedder, id_embedder,
++                config.get("trajectory_embedder").get("penalty"),
++                transition_embedder.embed_dim)
++        else:
++            raise ValueError("Unsupported trajectory embedder {}".format(
++                config.get("trajectory_embedder")))
++        return cls(trajectory_embedder, obs_embedder, instruction_embedder,
++                   config.get("embed_dim"))
+ 
+ 
+ class RecurrentAndTaskIDEmbedder(Embedder):
+-  """Embedding used by IMPORT.
+-
+-  Compute both:
+-    - g(\tau_{:t}) recurrently
+-    - f(e)
+-
+-  Full embedding is:
+-    \phi(s_t, z), where z is randomly chosen from g(\tau_{:t}) and f(e).
+-  """
+-
+-  def __init__(
+-      self, recurrent_state_embedder, id_embedder, state_embedder, embed_dim):
+-    super().__init__(embed_dim)
+-    assert id_embedder.embed_dim == recurrent_state_embedder.embed_dim
+-    self._recurrent_state_embedder = recurrent_state_embedder
+-    self._id_embedder = id_embedder
+-    self._state_embedder = state_embedder
+-    self._final_layer = nn.Linear(
+-        id_embedder.embed_dim + state_embedder.embed_dim, embed_dim)
+-    self._use_id = False
+-
+-  def use_ids(self, use):
+-    self._use_id = use
+-
+-  def _compute_embeddings(self, states, hidden_state=None):
+-    # (batch_size, seq_len, embed_dim)
+-    recurrent_embedding, hidden_state = self._recurrent_state_embedder(
+-        states, hidden_state)
+-    # (batch_size, embed_dim)
+-    id_embedding = self._id_embedder(
+-        torch.tensor([seq[0].env_id for seq in states]))
+-
+-    if len(recurrent_embedding.shape) > 2:
+-      id_embedding = id_embedding.unsqueeze(1).expand_as(recurrent_embedding)
+-    return recurrent_embedding, id_embedding, hidden_state
+-
+-  def forward(self, states, hidden_state=None):
+-    recurrent_embedding, id_embedding, hidden_state = self._compute_embeddings(
+-        states, hidden_state)
+-
+-    history_embed = recurrent_embedding
+-    if self._use_id:
+-      history_embed = id_embedding
+-
+-    # (batch_size, seq_len, state_embed_dim) or (batch_size, state_embed_dim)
+-    state_embeds = self._state_embedder(
+-        [state for seq in states for state in seq])
+-    if len(history_embed.shape) > 2:
+-      state_embeds = state_embeds.reshape(
+-          history_embed.shape[0], history_embed.shape[1], -1)
+-    return self._final_layer(
+-        F.relu(torch.cat((history_embed, state_embeds), -1))), hidden_state
+-
+-  def aux_loss(self, trajectories):
+-    # (batch_size, max_seq_len)
+-    trajectories, mask = utils.pad(trajectories)
+-
+-    # (batch_size, max_seq_len, embed_dim)
+-    recurrent_embeddings, id_embeddings, hidden_state = self._compute_embeddings(
+-        [[exp.state for exp in traj] for traj in trajectories],
+-        [traj[0].agent_state for traj in trajectories])
+-
+-    return {
+-      "embedding_distance": (
+-          ((recurrent_embeddings - id_embeddings.detach()) ** 2)
+-          .mean(0).sum())
+-    }
+-
+-  @classmethod
+-  def from_config(cls, config, env):
+-    recurrent_state_embedder = RecurrentStateEmbedder.from_config(
+-        config.get("recurrent_embedder"), env)
+-    state_embed_config = config.get("state_embedder")
+-    state_embedder = get_state_embedder(env)(
+-      env.observation_space["observation"],
+-      state_embed_config.get("embed_dim"))
+-    instruction_embedder = SimpleGridStateEmbedder(
+-      env.observation_space["instructions"],
+-      state_embed_config.get("embed_dim"))
+-    state_embedder = StateInstructionEmbedder(
+-        state_embedder, instruction_embedder,
+-        state_embed_config.get("embed_dim"))
+-
+-    id_embed_config = config.get("id_embedder")
+-    id_embedder = IDEmbedder(
+-        env.observation_space["env_id"].high,
+-        id_embed_config.get("embed_dim"))
+-    return cls(
+-        recurrent_state_embedder, id_embedder, state_embedder,
+-        config.get("embed_dim"))
++    """Embedding used by IMPORT.
+ 
++    Compute both:
++      - g(\tau_{:t}) recurrently
++      - f(e)
+ 
+-class VariBADEmbedder(Embedder):
+-  """Embedding used by VariBAD.
+-
+-  Computes:
+-    - g(\tau_{:t}) recurrently and applies fully connected heads on top to
+-      produce q(z_t | \tau_{:t}) = N(head1(g(\tau_{:t})), head2(g(\tau_{:t})))
+-    - embedding = \phi(z_t.detach(), embed(s_t))
+-
+-  Decoding auxiliary loss:
+-    - \sum_t \sum_i ||decoder(z_i, e(s_t), e(a_t)) - r_t||_2^2
+-    - \sum_t \sum_i ||decoder(z_i, e(s_t), e(a_t)) - s_{t + 1}||_2^2
+-  """
+-
+-  def __init__(
+-      self, recurrent_state_embedder, z_dim, state_embedder, action_embedder,
+-      state_dim, embed_dim, predict_state=True):
+-    super().__init__(embed_dim)
+-    self._recurrent_state_embedder = recurrent_state_embedder
+-    self._fc_mu = nn.Linear(recurrent_state_embedder.embed_dim, z_dim)
+-    self._fc_logvar = nn.Linear(recurrent_state_embedder.embed_dim, z_dim)
+-    self._state_embedder = state_embedder
+-    self._phi = nn.Linear(
+-        z_dim + state_embedder.embed_dim, embed_dim)
+-    self._action_embedder = action_embedder
+-    self._decoder = nn.Sequential(
+-      nn.Linear(z_dim + state_embedder.embed_dim + action_embedder.embed_dim,
+-                128),
+-      nn.ReLU(),
+-      nn.Linear(128, 128),
+-    )
+-
+-    # Predicts reward / state
+-    self._reward_head = nn.Linear(128, 1)
+-    self._state_head = nn.Linear(128, state_dim)
+-
+-    # If False, does not do state prediction
+-    self._predict_state = predict_state
+-    self._z_dim = z_dim
+-
+-  def _compute_z_distr(self, states, hidden_state=None):
+-    embeddings, hidden_state = self._recurrent_state_embedder(
+-        states, hidden_state=hidden_state)
+-
+-    # (batch_size, sequence_length, embed_dim)
+-    mu = embeddings
+-    std = torch.ones_like(mu) * 1e-6
+-
+-    q = td.Independent(td.Normal(mu, std), 1)
+-    return q, hidden_state
+-
+-  def forward(self, states, hidden_state=None):
+-    q, hidden_state = self._compute_z_distr(states, hidden_state)
+-    # Don't backprop through encoder
+-    z = q.rsample()
+-
+-    # (batch_size, seq_len, state_embed_dim) or (batch_size, state_embed_dim)
+-    state_embeds = self._state_embedder(
+-        [state for seq in states for state in seq])
+-    if len(z.shape) > 2:
+-      state_embeds = state_embeds.reshape(z.shape[0], z.shape[1], -1)
+-    return self._phi(F.relu(torch.cat((z, state_embeds), -1))), hidden_state
+-
+-  def aux_loss(self, trajectories):
+-    # The trajectories that we will try to decode
+-    # (batch_size, max_trajectory_len)
+-    trajectories_to_predict, predict_mask = utils.pad(
+-        [traj[0].trajectory for traj in trajectories])
+-
+-    # The trajectories we're using to encode z
+-    # They differ when we sample not the full trajectory
+-    # (batch_size, max_sequence_len)
+-    padded_trajectories, mask = utils.pad(trajectories)
+-
+-    q = self._compute_z_distr(
+-        [[exp.state for exp in traj] for traj in padded_trajectories],
+-        [traj[0].agent_state for traj in padded_trajectories])[0]
+-    # (batch_size, max_sequence_len, z_dim)
+-    z = q.rsample()
+-    # (batch_size, max_trajectory_len, max_sequence_len, z_dim)
+-    z = z.unsqueeze(1).expand(-1, predict_mask.shape[1], -1, -1)
+-
+-    # (batch_size, max_trajectory_len, embed_dim)
+-    # e(s)
+-    state_embeds = self._state_embedder(
+-        [exp.state for trajectory in trajectories_to_predict
+-         for exp in trajectory]).reshape(z.shape[0], z.shape[1], -1)
+-    # e(a)
+-    action_embeds = self._action_embedder(
+-        [exp.action for trajectory in trajectories_to_predict
+-         for exp in trajectory]).reshape(z.shape[0], z.shape[1], -1)
+-
+-    # (batch_size, max_trajectory_len, max_sequence_len, embed_dim)
+-    state_embeds = state_embeds.unsqueeze(2).expand(-1, -1, z.shape[2], -1)
+-    action_embeds = action_embeds.unsqueeze(2).expand(-1, -1, z.shape[2], -1)
+-
+-    decoder_input = torch.cat((z, state_embeds, action_embeds), -1)
+-    decoder_embed = self._decoder(decoder_input)
+-
+-    # (batch_size, max_trajectory_len, max_sequence_len, 1)
+-    predicted_rewards = self._reward_head(F.relu(decoder_embed))
+-
+-    # (batch_size, max_trajectory_len)
+-    true_rewards = torch.tensor(
+-        [[exp.next_state.prev_reward for exp in trajectory]
+-         for trajectory in trajectories_to_predict])
+-
+-    # (batch_size, max_trajectory_len, max_sequence_len, 1)
+-    true_rewards = true_rewards.unsqueeze(-1).unsqueeze(-1).expand_as(
+-        predicted_rewards)
+-
+-    # (batch_size, max_trajectory_len, max_sequence_len, 1)
+-    reward_decoding_loss = ((predicted_rewards - true_rewards) ** 2)
+-
+-    predict_mask = predict_mask.unsqueeze(2).expand(-1, -1, mask.shape[-1])
+-    mask = mask.unsqueeze(1).expand_as(predict_mask)
+-    # (batch_size, max_trajectory_len, max_sequence_len, 1)
+-    aggregate_mask = (predict_mask * mask).unsqueeze(-1)
+-    reward_decoding_loss = ((reward_decoding_loss * aggregate_mask).sum() /
+-                            reward_decoding_loss.shape[0])
+-
+-    state_decoding_loss = torch.tensor(0).float()
+-    if self._predict_state:
+-      # (batch_size, max_trajectory_len, max_sequence_len, state_dim)
+-      predicted_states = self._state_head(F.relu(decoder_embed))
+-
+-      # (batch_size, max_trajectory_len, state_dim)
+-      next_states_to_predict = torch.stack(
+-          [torch.stack([exp.next_state.observation for exp in trajectory])
+-           for trajectory in trajectories_to_predict])
+-
+-      # (batch_size, max_trajectory_len, max_sequence_len, state_dim)
+-      next_states_to_predict = next_states_to_predict.unsqueeze(2).expand_as(
+-          predicted_states)
+-
+-      # (batch_size, max_trajectory_len, max_sequence_len, state_dim)
+-      state_decoding_loss = ((predicted_states - next_states_to_predict) ** 2)
+-      state_decoding_loss = ((state_decoding_loss * aggregate_mask).sum() /
+-                             state_decoding_loss.shape[0])
+-
+-    #kl_loss = td.kl_divergence(q, self._prior(mask.shape[0], mask.shape[1]))
+-    return {
+-      "reward_decoding_loss": reward_decoding_loss,
+-      "state_decoding_loss": state_decoding_loss * 0.01,
+-      #"kl_loss": kl_loss * 0.1,
+-    }
+-
+-  def _prior(self, batch_size, sequence_len):
+-    mu = torch.zeros(batch_size, sequence_len, self._z_dim)
+-    std = torch.ones_like(mu)
+-    return td.Independent(td.Normal(mu, std), 1)
+-
+-  @classmethod
+-  def from_config(cls, config, env):
+-    recurrent_state_embedder = RecurrentStateEmbedder.from_config(
+-        config.get("recurrent_embedder"), env)
+-    state_embed_config = config.get("state_embedder")
+-    state_embedder = get_state_embedder(env)(
+-      env.observation_space["observation"],
+-      state_embed_config.get("embed_dim"))
+-    instruction_embedder = SimpleGridStateEmbedder(
+-      env.observation_space["instructions"],
+-      state_embed_config.get("embed_dim"))
+-    state_embedder = StateInstructionEmbedder(
+-        state_embedder, instruction_embedder,
+-        state_embed_config.get("embed_dim"))
+-
+-    action_embed_config = config.get("action_embedder")
+-    action_embedder = FixedVocabEmbedder(
+-        env.action_space.n, action_embed_config.get("embed_dim"))
+-    state_dim = len(env.observation_space["observation"].high)
+-    return cls(
+-        recurrent_state_embedder, config.get("z_dim"), state_embedder,
+-        action_embedder, state_dim, config.get("embed_dim"),
+-        config.get("predict_states"))
++    Full embedding is:
++      \phi(s_t, z), where z is randomly chosen from g(\tau_{:t}) and f(e).
++    """
+ 
++    def __init__(
++            self, recurrent_state_embedder, id_embedder, state_embedder, embed_dim):
++        super().__init__(embed_dim)
++        assert id_embedder.embed_dim == recurrent_state_embedder.embed_dim
++        self._recurrent_state_embedder = recurrent_state_embedder
++        self._id_embedder = id_embedder
++        self._state_embedder = state_embedder
++        self._final_layer = nn.Linear(
++            id_embedder.embed_dim + state_embedder.embed_dim, embed_dim)
++        self._use_id = False
++
++    def use_ids(self, use):
++        self._use_id = use
++
++    def _compute_embeddings(self, states, hidden_state=None):
++        # (batch_size, seq_len, embed_dim)
++        recurrent_embedding, hidden_state = self._recurrent_state_embedder(
++            states, hidden_state)
++        # (batch_size, embed_dim)
++        id_embedding = self._id_embedder(
++            torch.tensor([seq[0].env_id for seq in states]))
++
++        if len(recurrent_embedding.shape) > 2:
++            id_embedding = id_embedding.unsqueeze(1).expand_as(recurrent_embedding)
++        return recurrent_embedding, id_embedding, hidden_state
++
++    def forward(self, states, hidden_state=None):
++        recurrent_embedding, id_embedding, hidden_state = self._compute_embeddings(
++            states, hidden_state)
++
++        history_embed = recurrent_embedding
++        if self._use_id:
++            history_embed = id_embedding
++
++        # (batch_size, seq_len, state_embed_dim) or (batch_size, state_embed_dim)
++        state_embeds = self._state_embedder(
++            [state for seq in states for state in seq])
++        if len(history_embed.shape) > 2:
++            state_embeds = state_embeds.reshape(
++                history_embed.shape[0], history_embed.shape[1], -1)
++        return self._final_layer(
++            F.relu(torch.cat((history_embed, state_embeds), -1))), hidden_state
++
++    def aux_loss(self, trajectories):
++        # (batch_size, max_seq_len)
++        trajectories, mask = utils.pad(trajectories)
++
++        # (batch_size, max_seq_len, embed_dim)
++        recurrent_embeddings, id_embeddings, hidden_state = self._compute_embeddings(
++            [[exp.state for exp in traj] for traj in trajectories],
++            [traj[0].agent_state for traj in trajectories])
++
++        return {
++            "embedding_distance": (
++                ((recurrent_embeddings - id_embeddings.detach()) ** 2)
++                .mean(0).sum())
++        }
++
++    @classmethod
++    def from_config(cls, config, env):
++        recurrent_state_embedder = RecurrentStateEmbedder.from_config(
++            config.get("recurrent_embedder"), env)
++        state_embed_config = config.get("state_embedder")
++        state_embedder = get_state_embedder(env)(
++            env.observation_space["observation"],
++            state_embed_config.get("embed_dim"))
++        instruction_embedder = SimpleGridStateEmbedder(
++            env.observation_space["instructions"],
++            state_embed_config.get("embed_dim"))
++        state_embedder = StateInstructionEmbedder(
++            state_embedder, instruction_embedder,
++            state_embed_config.get("embed_dim"))
++
++        id_embed_config = config.get("id_embedder")
++        id_embedder = IDEmbedder(
++            env.observation_space["env_id"].high,
++            id_embed_config.get("embed_dim"))
++        return cls(
++            recurrent_state_embedder, id_embedder, state_embedder,
++            config.get("embed_dim"))
+ 
+-class RecurrentStateEmbedder(Embedder):
+-  """Applies an LSTM on top of a state embedding."""
+ 
+-  def __init__(self, state_embedder, embed_dim):
+-    super().__init__(embed_dim)
++class VariBADEmbedder(Embedder):
++    """Embedding used by VariBAD.
+ 
+-    self._state_embedder = state_embedder
+-    self._lstm_cell = nn.LSTMCell(state_embedder.embed_dim, embed_dim)
++    Computes:
++      - g(\tau_{:t}) recurrently and applies fully connected heads on top to
++        produce q(z_t | \tau_{:t}) = N(head1(g(\tau_{:t})), head2(g(\tau_{:t})))
++      - embedding = \phi(z_t.detach(), embed(s_t))
+ 
+-  def forward(self, states, hidden_state=None):
+-    """Embeds a batch of sequences of contiguous states.
++    Decoding auxiliary loss:
++      - \sum_t \sum_i ||decoder(z_i, e(s_t), e(a_t)) - r_t||_2^2
++      - \sum_t \sum_i ||decoder(z_i, e(s_t), e(a_t)) - s_{t + 1}||_2^2
++    """
+ 
+-    Args:
+-      states (list[list[np.array]]): of shape
+-        (batch_size, sequence_length, state_dim).
+-      hidden_state (list[object] | None): batch of initial hidden states
+-        to use with the LSTM. During inference, this should just be the
+-        previously returned hidden state.
++    def __init__(
++            self, recurrent_state_embedder, z_dim, state_embedder, action_embedder,
++            state_dim, embed_dim, predict_state=True):
++        super().__init__(embed_dim)
++        self._recurrent_state_embedder = recurrent_state_embedder
++        self._fc_mu = nn.Linear(recurrent_state_embedder.embed_dim, z_dim)
++        self._fc_logvar = nn.Linear(recurrent_state_embedder.embed_dim, z_dim)
++        self._state_embedder = state_embedder
++        self._phi = nn.Linear(
++            z_dim + state_embedder.embed_dim, embed_dim)
++        self._action_embedder = action_embedder
++        self._decoder = nn.Sequential(
++            nn.Linear(z_dim + state_embedder.embed_dim + action_embedder.embed_dim,
++                      128),
++            nn.ReLU(),
++            nn.Linear(128, 128),
++        )
++
++        # Predicts reward / state
++        self._reward_head = nn.Linear(128, 1)
++        self._state_head = nn.Linear(128, state_dim)
++
++        # If False, does not do state prediction
++        self._predict_state = predict_state
++        self._z_dim = z_dim
++
++    def _compute_z_distr(self, states, hidden_state=None):
++        embeddings, hidden_state = self._recurrent_state_embedder(
++            states, hidden_state=hidden_state)
++
++        # (batch_size, sequence_length, embed_dim)
++        mu = embeddings
++        std = torch.ones_like(mu) * 1e-6
++
++        q = td.Independent(td.Normal(mu, std), 1)
++        return q, hidden_state
++
++    def forward(self, states, hidden_state=None):
++        q, hidden_state = self._compute_z_distr(states, hidden_state)
++        # Don't backprop through encoder
++        z = q.rsample()
++
++        # (batch_size, seq_len, state_embed_dim) or (batch_size, state_embed_dim)
++        state_embeds = self._state_embedder(
++            [state for seq in states for state in seq])
++        if len(z.shape) > 2:
++            state_embeds = state_embeds.reshape(z.shape[0], z.shape[1], -1)
++        return self._phi(F.relu(torch.cat((z, state_embeds), -1))), hidden_state
++
++    def aux_loss(self, trajectories):
++        # The trajectories that we will try to decode
++        # (batch_size, max_trajectory_len)
++        trajectories_to_predict, predict_mask = utils.pad(
++            [traj[0].trajectory for traj in trajectories])
++
++        # The trajectories we're using to encode z
++        # They differ when we sample not the full trajectory
++        # (batch_size, max_sequence_len)
++        padded_trajectories, mask = utils.pad(trajectories)
++
++        q = self._compute_z_distr(
++            [[exp.state for exp in traj] for traj in padded_trajectories],
++            [traj[0].agent_state for traj in padded_trajectories])[0]
++        # (batch_size, max_sequence_len, z_dim)
++        z = q.rsample()
++        # (batch_size, max_trajectory_len, max_sequence_len, z_dim)
++        z = z.unsqueeze(1).expand(-1, predict_mask.shape[1], -1, -1)
++
++        # (batch_size, max_trajectory_len, embed_dim)
++        # e(s)
++        state_embeds = self._state_embedder(
++            [exp.state for trajectory in trajectories_to_predict
++             for exp in trajectory]).reshape(z.shape[0], z.shape[1], -1)
++        # e(a)
++        action_embeds = self._action_embedder(
++            [exp.action for trajectory in trajectories_to_predict
++             for exp in trajectory]).reshape(z.shape[0], z.shape[1], -1)
++
++        # (batch_size, max_trajectory_len, max_sequence_len, embed_dim)
++        state_embeds = state_embeds.unsqueeze(2).expand(-1, -1, z.shape[2], -1)
++        action_embeds = action_embeds.unsqueeze(2).expand(-1, -1, z.shape[2], -1)
++
++        decoder_input = torch.cat((z, state_embeds, action_embeds), -1)
++        decoder_embed = self._decoder(decoder_input)
++
++        # (batch_size, max_trajectory_len, max_sequence_len, 1)
++        predicted_rewards = self._reward_head(F.relu(decoder_embed))
++
++        # (batch_size, max_trajectory_len)
++        true_rewards = torch.tensor(
++            [[exp.next_state.prev_reward for exp in trajectory]
++             for trajectory in trajectories_to_predict])
++
++        # (batch_size, max_trajectory_len, max_sequence_len, 1)
++        true_rewards = true_rewards.unsqueeze(-1).unsqueeze(-1).expand_as(
++            predicted_rewards)
++
++        # (batch_size, max_trajectory_len, max_sequence_len, 1)
++        reward_decoding_loss = ((predicted_rewards - true_rewards) ** 2)
++
++        predict_mask = predict_mask.unsqueeze(2).expand(-1, -1, mask.shape[-1])
++        mask = mask.unsqueeze(1).expand_as(predict_mask)
++        # (batch_size, max_trajectory_len, max_sequence_len, 1)
++        aggregate_mask = (predict_mask * mask).unsqueeze(-1)
++        reward_decoding_loss = ((reward_decoding_loss * aggregate_mask).sum() /
++                                reward_decoding_loss.shape[0])
++
++        state_decoding_loss = torch.tensor(0).float()
++        if self._predict_state:
++            # (batch_size, max_trajectory_len, max_sequence_len, state_dim)
++            predicted_states = self._state_head(F.relu(decoder_embed))
++
++            # (batch_size, max_trajectory_len, state_dim)
++            next_states_to_predict = torch.stack(
++                [torch.stack([exp.next_state.observation for exp in trajectory])
++                 for trajectory in trajectories_to_predict])
++
++            # (batch_size, max_trajectory_len, max_sequence_len, state_dim)
++            next_states_to_predict = next_states_to_predict.unsqueeze(2).expand_as(
++                predicted_states)
++
++            # (batch_size, max_trajectory_len, max_sequence_len, state_dim)
++            state_decoding_loss = ((predicted_states - next_states_to_predict) ** 2)
++            state_decoding_loss = ((state_decoding_loss * aggregate_mask).sum() /
++                                   state_decoding_loss.shape[0])
++
++        #kl_loss = td.kl_divergence(q, self._prior(mask.shape[0], mask.shape[1]))
++        return {
++            "reward_decoding_loss": reward_decoding_loss,
++            "state_decoding_loss": state_decoding_loss * 0.01,
++            # "kl_loss": kl_loss * 0.1,
++        }
++
++    def _prior(self, batch_size, sequence_len):
++        mu = torch.zeros(batch_size, sequence_len, self._z_dim)
++        std = torch.ones_like(mu)
++        return td.Independent(td.Normal(mu, std), 1)
++
++    @classmethod
++    def from_config(cls, config, env):
++        recurrent_state_embedder = RecurrentStateEmbedder.from_config(
++            config.get("recurrent_embedder"), env)
++        state_embed_config = config.get("state_embedder")
++        state_embedder = get_state_embedder(env)(
++            env.observation_space["observation"],
++            state_embed_config.get("embed_dim"))
++        instruction_embedder = SimpleGridStateEmbedder(
++            env.observation_space["instructions"],
++            state_embed_config.get("embed_dim"))
++        state_embedder = StateInstructionEmbedder(
++            state_embedder, instruction_embedder,
++            state_embed_config.get("embed_dim"))
++
++        action_embed_config = config.get("action_embedder")
++        action_embedder = FixedVocabEmbedder(
++            env.action_space.n, action_embed_config.get("embed_dim"))
++        state_dim = len(env.observation_space["observation"].high)
++        return cls(
++            recurrent_state_embedder, config.get("z_dim"), state_embedder,
++            action_embedder, state_dim, config.get("embed_dim"),
++            config.get("predict_states"))
+ 
+-    Returns:
+-      embedding (torch.tensor): shape (batch_size, sequence_length, embed_dim)
+-      hidden_state (object): hidden state after embedding every element in the
+-        sequence.
+-    """
+-    batch_size = len(states)
+-    sequence_len = len(states[0])
+-
+-    # Stack batched hidden state
+-    if batch_size > 1 and hidden_state is not None:
+-      hs = []
+-      cs = []
+-      for hidden in hidden_state:
+-        if hidden is None:
+-          hs.append(torch.zeros(1, self.embed_dim))
+-          cs.append(torch.zeros(1, self.embed_dim))
+-        else:
+-          hs.append(hidden[0])
+-          cs.append(hidden[1])
+-      hidden_state = (torch.cat(hs, 0), torch.cat(cs, 0))
+-
+-    flattened = [state for seq in states for state in seq]
+-
+-    # (batch_size * sequence_len, embed_dim)
+-    state_embeds = self._state_embedder(flattened)
+-    state_embeds = state_embeds.reshape(batch_size, sequence_len, -1)
+-
+-    embeddings = []
+-    for seq_index in range(sequence_len):
+-      hidden_state = self._lstm_cell(
+-          state_embeds[:, seq_index, :], hidden_state)
+-
+-      # (batch_size, 1, embed_dim)
+-      embeddings.append(hidden_state[0].unsqueeze(1))
+-
+-    # (batch_size, sequence_len, embed_dim)
+-    # squeezed to (batch_size, embed_dim) if sequence_len == 1
+-    embeddings = torch.cat(embeddings, 1).squeeze(1)
+-
+-    # Detach to save GPU memory.
+-    detached_hidden_state = (hidden_state[0].detach(), hidden_state[1].detach())
+-    return embeddings, detached_hidden_state
+-
+-  @classmethod
+-  def from_config(cls, config, env):
+-    experience_embed_config = config.get("experience_embedder")
+-    state_embedder = get_state_embedder(env)(
+-        env.observation_space["observation"],
+-        experience_embed_config.get("state_embed_dim"))
+-    action_embedder = FixedVocabEmbedder(
+-        env.action_space.n + 1, experience_embed_config.get("action_embed_dim"))
+-    instruction_embedder = None
+-    if experience_embed_config.get("instruction_embed_dim") is not None:
+-      # Use SimpleGridEmbedder since these are just discrete vars
+-      instruction_embedder = SimpleGridStateEmbedder(
+-          env.observation_space["instructions"],
+-          experience_embed_config.get("instruction_embed_dim"))
+-
+-    reward_embedder = None
+-    if experience_embed_config.get("reward_embed_dim") is not None:
+-      reward_embedder = LinearEmbedder(
+-          1, experience_embed_config.get("reward_embed_dim"))
+-
+-    done_embedder = None
+-    if experience_embed_config.get("done_embed_dim") is not None:
+-      done_embedder = FixedVocabEmbedder(
+-          2, experience_embed_config.get("done_embed_dim"))
+-
+-    experience_embedder = ExperienceEmbedder(
+-        state_embedder, instruction_embedder, action_embedder,
+-        reward_embedder, done_embedder,
+-        experience_embed_config.get("embed_dim"))
+-    return cls(experience_embedder, config.get("embed_dim"))
++
++class RecurrentStateEmbedder(Embedder):
++    """Applies an LSTM on top of a state embedding."""
++
++    def __init__(self, state_embedder, embed_dim):
++        super().__init__(embed_dim)
++
++        self._state_embedder = state_embedder
++        self._lstm_cell = nn.LSTMCell(state_embedder.embed_dim, embed_dim)
++
++    def forward(self, states, hidden_state=None):
++        """Embeds a batch of sequences of contiguous states.
++
++        Args:
++          states (list[list[np.array]]): of shape
++            (batch_size, sequence_length, state_dim).
++          hidden_state (list[object] | None): batch of initial hidden states
++            to use with the LSTM. During inference, this should just be the
++            previously returned hidden state.
++
++        Returns:
++          embedding (torch.tensor): shape (batch_size, sequence_length, embed_dim)
++          hidden_state (object): hidden state after embedding every element in the
++            sequence.
++        """
++        batch_size = len(states)
++        sequence_len = len(states[0])
++
++        # Stack batched hidden state
++        if batch_size > 1 and hidden_state is not None:
++            hs = []
++            cs = []
++            for hidden in hidden_state:
++                if hidden is None:
++                    hs.append(torch.zeros(1, self.embed_dim))
++                    cs.append(torch.zeros(1, self.embed_dim))
++                else:
++                    hs.append(hidden[0])
++                    cs.append(hidden[1])
++            hidden_state = (torch.cat(hs, 0), torch.cat(cs, 0))
++
++        flattened = [state for seq in states for state in seq]
++
++        # (batch_size * sequence_len, embed_dim)
++        state_embeds = self._state_embedder(flattened)
++        state_embeds = state_embeds.reshape(batch_size, sequence_len, -1)
++
++        embeddings = []
++        for seq_index in range(sequence_len):
++            hidden_state = self._lstm_cell(
++                state_embeds[:, seq_index, :], hidden_state)
++
++            # (batch_size, 1, embed_dim)
++            embeddings.append(hidden_state[0].unsqueeze(1))
++
++        # (batch_size, sequence_len, embed_dim)
++        # squeezed to (batch_size, embed_dim) if sequence_len == 1
++        embeddings = torch.cat(embeddings, 1).squeeze(1)
++
++        # Detach to save GPU memory.
++        detached_hidden_state = (hidden_state[0].detach(), hidden_state[1].detach())
++        return embeddings, detached_hidden_state
++
++    @classmethod
++    def from_config(cls, config, env):
++        experience_embed_config = config.get("experience_embedder")
++        state_embedder = get_state_embedder(env)(
++            env.observation_space["observation"],
++            experience_embed_config.get("state_embed_dim"))
++        action_embedder = FixedVocabEmbedder(
++            env.action_space.n + 1, experience_embed_config.get("action_embed_dim"))
++        instruction_embedder = None
++        if experience_embed_config.get("instruction_embed_dim") is not None:
++            # Use SimpleGridEmbedder since these are just discrete vars
++            instruction_embedder = SimpleGridStateEmbedder(
++                env.observation_space["instructions"],
++                experience_embed_config.get("instruction_embed_dim"))
++
++        reward_embedder = None
++        if experience_embed_config.get("reward_embed_dim") is not None:
++            reward_embedder = LinearEmbedder(
++                1, experience_embed_config.get("reward_embed_dim"))
++
++        done_embedder = None
++        if experience_embed_config.get("done_embed_dim") is not None:
++            done_embedder = FixedVocabEmbedder(
++                2, experience_embed_config.get("done_embed_dim"))
++
++        experience_embedder = ExperienceEmbedder(
++            state_embedder, instruction_embedder, action_embedder,
++            reward_embedder, done_embedder,
++            experience_embed_config.get("embed_dim"))
++        return cls(experience_embedder, config.get("embed_dim"))
+ 
+ 
+ class StateInstructionEmbedder(Embedder):
+-  """Embeds instructions and states and applies a linear layer on top."""
+-
+-  def __init__(self, state_embedder, instruction_embedder, embed_dim):
+-    super().__init__(embed_dim)
+-    self._state_embedder = state_embedder
+-    self._instruction_embedder = instruction_embedder
+-    if instruction_embedder is not None:
+-      self._final_layer = nn.Linear(
+-          state_embedder.embed_dim + instruction_embedder.embed_dim, embed_dim)
+-      assert self._state_embedder.embed_dim == embed_dim
+-
+-  def forward(self, states):
+-    state_embeds = self._state_embedder([state.observation for state in states])
+-    if self._instruction_embedder is not None:
+-      instruction_embeds = self._instruction_embedder(
+-          [torch.tensor(state.instructions) for state in states])
+-      return self._final_layer(
+-          F.relu(torch.cat((state_embeds, instruction_embeds), -1)))
+-    return state_embeds
++    """Embeds instructions and states and applies a linear layer on top."""
++
++    def __init__(self, state_embedder, instruction_embedder, embed_dim):
++        super().__init__(embed_dim)
++        self._state_embedder = state_embedder
++        self._instruction_embedder = instruction_embedder
++        if instruction_embedder is not None:
++            self._final_layer = nn.Linear(
++                state_embedder.embed_dim + instruction_embedder.embed_dim, embed_dim)
++            assert self._state_embedder.embed_dim == embed_dim
++
++    def forward(self, states):
++        state_embeds = self._state_embedder([state.observation for state in states])
++        if self._instruction_embedder is not None:
++            instruction_embeds = self._instruction_embedder(
++                [torch.tensor(state.instructions) for state in states])
++            return self._final_layer(
++                F.relu(torch.cat((state_embeds, instruction_embeds), -1)))
++        return state_embeds
+ 
+ 
+ def init(module, weight_init, bias_init, gain=1):
+@@ -766,240 +766,241 @@ class Flatten(nn.Module):
+ 
+ 
+ class MiniWorldEmbedder(Embedder):
+-  """Embeds 80x60 MiniWorld inputs.
++    """Embeds 80x60 MiniWorld inputs.
+ 
+-  Network taken from gym-miniworld/.
+-  """
+-  def __init__(self, observation_space, embed_dim):
+-    super().__init__(embed_dim)
++    Network taken from gym-miniworld/.
++    """
+ 
+-    # Architecture from gym-miniworld
+-    # For 80x60 input
+-    num_inputs = observation_space.shape[0]
++    def __init__(self, observation_space, embed_dim):
++        super().__init__(embed_dim)
+ 
+-    self._network = nn.Sequential(
+-        nn.Conv2d(num_inputs, 32, kernel_size=5, stride=2),
+-        nn.ReLU(),
++        # Architecture from gym-miniworld
++        # For 80x60 input
++        num_inputs = observation_space.shape[0]
+ 
+-        nn.Conv2d(32, 32, kernel_size=5, stride=2),
+-        nn.ReLU(),
++        self._network = nn.Sequential(
++            nn.Conv2d(num_inputs, 32, kernel_size=5, stride=2),
++            nn.ReLU(),
+ 
+-        nn.Conv2d(32, 32, kernel_size=4, stride=2),
+-        nn.ReLU(),
++            nn.Conv2d(32, 32, kernel_size=5, stride=2),
++            nn.ReLU(),
+ 
+-        Flatten(),
++            nn.Conv2d(32, 32, kernel_size=4, stride=2),
++            nn.ReLU(),
+ 
+-        nn.Linear(32 * 7 * 5, embed_dim),
+-    )
++            Flatten(),
+ 
+-  def forward(self, obs):
+-    # (batch_size, 80, 60, 3)
+-    tensor = torch.stack(obs) / 255.
+-    return self._network(tensor)
++            nn.Linear(32 * 7 * 5, embed_dim),
++        )
++
++    def forward(self, obs):
++        # (batch_size, 80, 60, 3)
++        tensor = torch.stack(obs) / 255.
++        return self._network(tensor)
+ 
+ 
+ class SimpleGridStateEmbedder(Embedder):
+-  """Embedder for SimpleGridEnv states.
++    """Embedder for SimpleGridEnv states.
+ 
+-  Concretely, embeds (x, y) separately with different embeddings for each cell.
+-  """
++    Concretely, embeds (x, y) separately with different embeddings for each cell.
++    """
+ 
+-  def __init__(self, observation_space, embed_dim):
+-    """Constructs for SimpleGridEnv.
++    def __init__(self, observation_space, embed_dim):
++        """Constructs for SimpleGridEnv.
+ 
+-    Args:
+-      observation_space (spaces.Box): limits for the observations to embed.
+-    """
+-    super().__init__(embed_dim)
++        Args:
++          observation_space (spaces.Box): limits for the observations to embed.
++        """
++        super().__init__(embed_dim)
+ 
+-    assert all(dim == 0 for dim in observation_space.low)
+-    assert observation_space.dtype == np.int
++        assert all(dim == 0 for dim in observation_space.low)
++        assert observation_space.dtype == np.int
+ 
+-    hidden_size = 32
+-    self._embedders = nn.ModuleList(
+-        [nn.Embedding(dim, hidden_size) for dim in observation_space.high])
+-    self._fc_layer = nn.Linear(hidden_size * len(observation_space.high), 256)
+-    self._final_fc_layer = nn.Linear(256, embed_dim)
++        hidden_size = 32
++        self._embedders = nn.ModuleList(
++            [nn.Embedding(dim, hidden_size) for dim in observation_space.high])
++        self._fc_layer = nn.Linear(hidden_size * len(observation_space.high), 256)
++        self._final_fc_layer = nn.Linear(256, embed_dim)
+ 
+-  def forward(self, obs):
+-    tensor = torch.stack(obs)
+-    embeds = []
+-    for i in range(tensor.shape[1]):
+-      embeds.append(self._embedders[i](tensor[:, i]))
+-    return self._final_fc_layer(F.relu(self._fc_layer(torch.cat(embeds, -1))))
++    def forward(self, obs):
++        tensor = torch.stack(obs)
++        embeds = []
++        for i in range(tensor.shape[1]):
++            embeds.append(self._embedders[i](tensor[:, i].long()))  # fix for windows
++        return self._final_fc_layer(F.relu(self._fc_layer(torch.cat(embeds, -1))))
+ 
+ 
+ class IDEmbedder(Embedder):
+-  """Embeds N-dim IDs by embedding each component and applying a linear
+-  layer."""
++    """Embeds N-dim IDs by embedding each component and applying a linear
++    layer."""
+ 
+-  def __init__(self, observation_space, embed_dim):
+-    """Constructs for SimpleGridEnv.
++    def __init__(self, observation_space, embed_dim):
++        """Constructs for SimpleGridEnv.
+ 
+-    Args:
+-      observation_space (np.array): discrete max limits for each dimension of the
+-        state (expects min is 0).
+-    """
+-    super().__init__(embed_dim)
++        Args:
++          observation_space (np.array): discrete max limits for each dimension of the
++            state (expects min is 0).
++        """
++        super().__init__(embed_dim)
+ 
+-    hidden_size = 32
+-    self._embedders = nn.ModuleList(
+-        [nn.Embedding(dim, hidden_size) for dim in observation_space])
+-    self._fc_layer = nn.Linear(hidden_size * len(observation_space), embed_dim)
++        hidden_size = 32
++        self._embedders = nn.ModuleList(
++            [nn.Embedding(dim, hidden_size) for dim in observation_space])
++        self._fc_layer = nn.Linear(hidden_size * len(observation_space), embed_dim)
+ 
+-  @classmethod
+-  def from_config(cls, config, observation_space):
+-    return cls(observation_space, config.get("embed_dim"))
++    @classmethod
++    def from_config(cls, config, observation_space):
++        return cls(observation_space, config.get("embed_dim"))
+ 
+-  def forward(self, obs):
+-    tensor = obs
+-    if len(tensor.shape) == 1:  # 1-d IDs
+-      tensor = tensor.unsqueeze(-1)
++    def forward(self, obs):
++        tensor = obs
++        if len(tensor.shape) == 1:  # 1-d IDs
++            tensor = tensor.unsqueeze(-1)
+ 
+-    embeds = []
+-    for i in range(tensor.shape[1]):
+-      embeds.append(self._embedders[i](tensor[:, i]))
+-    return self._fc_layer(torch.cat(embeds, -1))
++        embeds = []
++        for i in range(tensor.shape[1]):
++            embeds.append(self._embedders[i](tensor[:, i].long()))
++        return self._fc_layer(torch.cat(embeds, -1))
+ 
+ 
+ class FixedVocabEmbedder(Embedder):
+-  """Wrapper around nn.Embedding obeying the Embedder interface."""
++    """Wrapper around nn.Embedding obeying the Embedder interface."""
+ 
+-  def __init__(self, vocab_size, embed_dim):
+-    """Constructs.
++    def __init__(self, vocab_size, embed_dim):
++        """Constructs.
+ 
+-    Args:
+-      vocab_size (int): number of unique embeddings.
+-      embed_dim (int): dimension of output embedding.
+-    """
+-    super().__init__(embed_dim)
++        Args:
++          vocab_size (int): number of unique embeddings.
++          embed_dim (int): dimension of output embedding.
++        """
++        super().__init__(embed_dim)
+ 
+-    self._embedder = nn.Embedding(vocab_size, embed_dim)
++        self._embedder = nn.Embedding(vocab_size, embed_dim)
+ 
+-  @classmethod
+-  def from_config(cls, config):
+-    return cls(config.get("vocab_size"), config.get("embed_dim"))
++    @classmethod
++    def from_config(cls, config):
++        return cls(config.get("vocab_size"), config.get("embed_dim"))
+ 
+-  def forward(self, inputs):
+-    """Embeds inputs according to the underlying nn.Embedding.
++    def forward(self, inputs):
++        """Embeds inputs according to the underlying nn.Embedding.
+ 
+-    Args:
+-      inputs (list[int]): list of inputs of length batch.
++        Args:
++          inputs (list[int]): list of inputs of length batch.
+ 
+-    Returns:
+-      embedding (torch.Tensor): of shape (batch, embed_dim)
+-    """
+-    tensor_inputs = torch.tensor(np.stack(inputs)).long()
+-    return self._embedder(tensor_inputs)
++        Returns:
++          embedding (torch.Tensor): of shape (batch, embed_dim)
++        """
++        tensor_inputs = torch.tensor(np.stack(inputs)).long()
++        return self._embedder(tensor_inputs)
+ 
+ 
+ class LinearEmbedder(Embedder):
+-  """Wrapper around nn.Linear obeying the Embedder interface."""
++    """Wrapper around nn.Linear obeying the Embedder interface."""
+ 
+-  def __init__(self, input_dim, embed_dim):
+-    """Wraps a nn.Linear(input_dim, embed_dim).
++    def __init__(self, input_dim, embed_dim):
++        """Wraps a nn.Linear(input_dim, embed_dim).
+ 
+-    Args:
+-      input_dim (int): dimension of inputs to embed.
+-      embed_dim (int): dimension of output embedding.
+-    """
+-    super().__init__(embed_dim)
++        Args:
++          input_dim (int): dimension of inputs to embed.
++          embed_dim (int): dimension of output embedding.
++        """
++        super().__init__(embed_dim)
+ 
+-    self._embedder = nn.Linear(input_dim, embed_dim)
++        self._embedder = nn.Linear(input_dim, embed_dim)
+ 
+-  @classmethod
+-  def from_config(cls, config):
+-    return cls(config.get("input_dim"), config.get("embed_dim"))
++    @classmethod
++    def from_config(cls, config):
++        return cls(config.get("input_dim"), config.get("embed_dim"))
+ 
+-  def forward(self, inputs):
+-    """Embeds inputs according to the underlying nn.Linear.
++    def forward(self, inputs):
++        """Embeds inputs according to the underlying nn.Linear.
+ 
+-    Args:
+-      inputs (list[np.array]): list of inputs of length batch.
+-        Each input is an array of shape (input_dim).
++        Args:
++          inputs (list[np.array]): list of inputs of length batch.
++            Each input is an array of shape (input_dim).
+ 
+-    Returns:
+-      embedding (torch.Tensor): of shape (batch, embed_dim)
+-    """
+-    inputs = np.stack(inputs)
+-    if len(inputs.shape) == 1:
+-      inputs = np.expand_dims(inputs, 1)
+-    tensor_inputs = torch.tensor(inputs).float()
+-    return self._embedder(tensor_inputs)
++        Returns:
++          embedding (torch.Tensor): of shape (batch, embed_dim)
++        """
++        inputs = np.stack(inputs)
++        if len(inputs.shape) == 1:
++            inputs = np.expand_dims(inputs, 1)
++        tensor_inputs = torch.tensor(inputs).float()
++        return self._embedder(tensor_inputs)
+ 
+ 
+ class ExperienceEmbedder(Embedder):
+-  """Optionally embeds each of:
+-
+-    - state s
+-    - instructions i
+-    - actions a
+-    - rewards r
+-    - done d
+-
+-  Then passes a single linear layer over their concatenation.
+-  """
+-
+-  def __init__(self, state_embedder, instruction_embedder, action_embedder,
+-               reward_embedder, done_embedder, embed_dim):
+-    """Constructs.
+-
+-    Args:
+-      state_embedder (Embedder | None)
+-      instruction_embedder (Embedder | None)
+-      action_embedder (Embedder | None)
+-      reward_embedder (Embedder | None)
+-      done_embedder (Embedder | None)
+-      embed_dim (int): dimension of the output
+-    """
+-    super().__init__(embed_dim)
+-
+-    self._embedders = collections.OrderedDict()
+-    if state_embedder is not None:
+-      self._embedders["state"] = state_embedder
+-    if instruction_embedder is not None:
+-      self._embedders["instruction"] = instruction_embedder
+-    if action_embedder is not None:
+-      self._embedders["action"] = action_embedder
+-    if reward_embedder is not None:
+-      self._embedders["reward"] = reward_embedder
+-    if done_embedder is not None:
+-      self._embedders["done"] = done_embedder
+-
+-    # Register the embedders so they get gradients
+-    self._register_embedders = nn.ModuleList(self._embedders.values())
+-    self._final_layer = nn.Linear(
+-        sum(embedder.embed_dim for embedder in self._embedders.values()),
+-        embed_dim)
+-
+-  def forward(self, instruction_states):
+-    """Embeds the components for which this has embedders.
+-
+-    Args:
+-      instruction_states (list[InstructionState]): batch of states.
+-
+-    Returns:
+-      embedding (torch.Tensor): of shape (batch, embed_dim)
++    """Optionally embeds each of:
++
++      - state s
++      - instructions i
++      - actions a
++      - rewards r
++      - done d
++
++    Then passes a single linear layer over their concatenation.
+     """
+-    def get_inputs(key, states):
+-      if key == "state":
+-        return [state.observation for state in states]
+-      elif key == "instruction":
+-        return [torch.tensor(state.instructions) for state in states]
+-      elif key == "action":
+-        actions = np.array(
+-            [state.prev_action if state.prev_action is not None else -1
+-             for state in states])
+-        return actions + 1
+-      elif key == "reward":
+-        return [state.prev_reward for state in states]
+-      elif key == "done":
+-        return [state.done for state in states]
+-      else:
+-        raise ValueError("Unsupported key: {}".format(key))
+-
+-    embeddings = []
+-    for key, embedder in self._embedders.items():
+-      inputs = get_inputs(key, instruction_states)
+-      embeddings.append(embedder(inputs))
+-    return self._final_layer(F.relu(torch.cat(embeddings, -1)))
++
++    def __init__(self, state_embedder, instruction_embedder, action_embedder,
++                 reward_embedder, done_embedder, embed_dim):
++        """Constructs.
++
++        Args:
++          state_embedder (Embedder | None)
++          instruction_embedder (Embedder | None)
++          action_embedder (Embedder | None)
++          reward_embedder (Embedder | None)
++          done_embedder (Embedder | None)
++          embed_dim (int): dimension of the output
++        """
++        super().__init__(embed_dim)
++
++        self._embedders = collections.OrderedDict()
++        if state_embedder is not None:
++            self._embedders["state"] = state_embedder
++        if instruction_embedder is not None:
++            self._embedders["instruction"] = instruction_embedder
++        if action_embedder is not None:
++            self._embedders["action"] = action_embedder
++        if reward_embedder is not None:
++            self._embedders["reward"] = reward_embedder
++        if done_embedder is not None:
++            self._embedders["done"] = done_embedder
++
++        # Register the embedders so they get gradients
++        self._register_embedders = nn.ModuleList(self._embedders.values())
++        self._final_layer = nn.Linear(
++            sum(embedder.embed_dim for embedder in self._embedders.values()),
++            embed_dim)
++
++    def forward(self, instruction_states):
++        """Embeds the components for which this has embedders.
++
++        Args:
++          instruction_states (list[InstructionState]): batch of states.
++
++        Returns:
++          embedding (torch.Tensor): of shape (batch, embed_dim)
++        """
++        def get_inputs(key, states):
++            if key == "state":
++                return [state.observation for state in states]
++            elif key == "instruction":
++                return [torch.tensor(state.instructions) for state in states]
++            elif key == "action":
++                actions = np.array(
++                    [state.prev_action if state.prev_action is not None else -1
++                     for state in states])
++                return actions + 1
++            elif key == "reward":
++                return [state.prev_reward for state in states]
++            elif key == "done":
++                return [state.done for state in states]
++            else:
++                raise ValueError("Unsupported key: {}".format(key))
++
++        embeddings = []
++        for key, embedder in self._embedders.items():
++            inputs = get_inputs(key, instruction_states)
++            embeddings.append(embedder(inputs))
++        return self._final_layer(F.relu(torch.cat(embeddings, -1)))
+
+---
+
+main.py
+=======================================================
+lhs: 100644 | e8bb27c7297625ba61483fdd4f19b0bfb1877bac
+rhs: 100644 | d42cbda8dd6bca826040412b854e5b3e70702479
+---@@ -3,383 +3,379 @@ import collections
+ import os
+ import shutil
+ 
+-import git
+-import numpy as np
+-import torch
+-import tqdm
+-
+ import config as cfg
+ import dqn
+-from envs import grid
+-from envs import cooking
+-from envs import city
++import git
++import numpy as np
+ import policy
+ import relabel
+ import rl
++import torch
++import tqdm
+ import utils
++from envs import city, cooking, grid
+ 
+ 
+ def run_episode(env, policy, experience_observers=None, test=False):
+-  """Runs a single episode on the environment following the policy.
+-
+-  Args:
+-    env (gym.Environment): environment to run on.
+-    policy (Policy): policy to follow.
+-    experience_observers (list[Callable] | None): each observer is called with
+-      with each experience at each timestep.
+-
+-  Returns:
+-    episode (list[Experience]): experiences from the episode.
+-    renders (list[object | None]): renderings of the episode, only rendered if
+-      test=True. Otherwise, returns list of Nones.
+-  """
+-  # Optimization: rendering takes a lot of time.
+-  def maybe_render(env, action, reward, timestep):
+-    if test:
+-      render = env.render()
+-      render.write_text("Action: {}".format(str(action)))
+-      render.write_text("Reward: {}".format(reward))
+-      render.write_text("Timestep: {}".format(timestep))
+-      return render
+-    return None
+-
+-  if experience_observers is None:
+-    experience_observers = []
+-
+-  episode = []
+-  state = env.reset()
+-  timestep = 0
+-  renders = [maybe_render(env, None, 0, timestep)]
+-  hidden_state = None
+-  while True:
+-    action, next_hidden_state = policy.act(
+-        state, hidden_state, test=test)
+-    next_state, reward, done, info = env.step(action)
+-    timestep += 1
+-    renders.append(
+-        maybe_render(env, grid.Action(action), reward, timestep))
+-    experience = rl.Experience(
+-        state, action, reward, next_state, done, info, hidden_state,
+-        next_hidden_state)
+-    episode.append(experience)
+-    for observer in experience_observers:
+-      observer(experience)
+-
+-    state = next_state
+-    hidden_state = next_hidden_state
+-    if done:
+-      return episode, renders
++    """Runs a single episode on the environment following the policy.
++
++    Args:
++      env (gym.Environment): environment to run on.
++      policy (Policy): policy to follow.
++      experience_observers (list[Callable] | None): each observer is called with
++        with each experience at each timestep.
++
++    Returns:
++      episode (list[Experience]): experiences from the episode.
++      renders (list[object | None]): renderings of the episode, only rendered if
++        test=True. Otherwise, returns list of Nones.
++    """
++    # Optimization: rendering takes a lot of time.
++    def maybe_render(env, action, reward, timestep):
++        if test:
++            render = env.render()
++            render.write_text("Action: {}".format(str(action)))
++            render.write_text("Reward: {}".format(reward))
++            render.write_text("Timestep: {}".format(timestep))
++            return render
++        return None
++
++    if experience_observers is None:
++        experience_observers = []
++
++    episode = []
++    state = env.reset()
++    timestep = 0
++    renders = [maybe_render(env, None, 0, timestep)]
++    hidden_state = None
++    while True:
++        action, next_hidden_state = policy.act(
++            state, hidden_state, test=test)
++        next_state, reward, done, info = env.step(action)
++        timestep += 1
++        renders.append(
++            maybe_render(env, grid.Action(action), reward, timestep))
++        experience = rl.Experience(
++            state, action, reward, next_state, done, info, hidden_state,
++            next_hidden_state)
++        episode.append(experience)
++        for observer in experience_observers:
++            observer(experience)
++
++        state = next_state
++        hidden_state = next_hidden_state
++        if done:
++            return episode, renders
+ 
+ 
+ def get_env_class(environment_type):
+-  """Returns the environment class specified by the type.
+-
+-  Args:
+-    environment_type (str): a valid environment type.
+-
+-  Returns:
+-    environment_class (type): type specified.
+-  """
+-  if environment_type == "vanilla":
+-    return city.CityGridEnv
+-  elif environment_type == "distraction":
+-    return city.DistractionGridEnv
+-  elif environment_type == "map":
+-    return city.MapGridEnv
+-  elif environment_type == "cooking":
+-    return cooking.CookingGridEnv
+-  elif environment_type == "miniworld_sign":
+-    # Dependencies on OpenGL, so only load if absolutely necessary
+-    from envs.miniworld import sign
+-    return sign.MiniWorldSign
+-  else:
+-    raise ValueError(
+-        "Unsupported environment type: {}".format(environment_type))
++    """Returns the environment class specified by the type.
++
++    Args:
++      environment_type (str): a valid environment type.
++
++    Returns:
++      environment_class (type): type specified.
++    """
++    if environment_type == "vanilla":
++        return city.CityGridEnv
++    elif environment_type == "distraction":
++        return city.DistractionGridEnv
++    elif environment_type == "map":
++        return city.MapGridEnv
++    elif environment_type == "cooking":
++        return cooking.CookingGridEnv
++    elif environment_type == "miniworld_sign":
++        # Dependencies on OpenGL, so only load if absolutely necessary
++        from envs.miniworld import sign
++        return sign.MiniWorldSign
++    else:
++        raise ValueError(
++            "Unsupported environment type: {}".format(environment_type))
+ 
+ 
+ def get_instruction_agent(instruction_config, instruction_env):
+-  if instruction_config.get("type") == "learned":
+-    return dqn.DQNAgent.from_config(instruction_config, instruction_env)
+-  else:
+-    raise ValueError(
+-        "Invalid instruction agent: {}".format(instruction_config.get("type")))
++    if instruction_config.get("type") == "learned":
++        return dqn.DQNAgent.from_config(instruction_config, instruction_env)
++    else:
++        raise ValueError(
++            "Invalid instruction agent: {}".format(instruction_config.get("type")))
+ 
+ 
+ def get_exploration_agent(exploration_config, exploration_env):
+-  if exploration_config.get("type") == "learned":
+-    return dqn.DQNAgent.from_config(exploration_config, exploration_env)
+-  elif exploration_config.get("type") == "random":
+-    return policy.RandomPolicy(exploration_env.action_space)
+-  elif exploration_config.get("type") == "none":
+-    return policy.ConstantActionPolicy(grid.Action.end_episode)
+-  else:
+-    raise ValueError("Invalid exploration agent: {}".format(
+-      exploration_config.get("type")))
++    if exploration_config.get("type") == "learned":
++        return dqn.DQNAgent.from_config(exploration_config, exploration_env)
++    elif exploration_config.get("type") == "random":
++        return policy.RandomPolicy(exploration_env.action_space)
++    elif exploration_config.get("type") == "none":
++        return policy.ConstantActionPolicy(grid.Action.end_episode)
++    else:
++        raise ValueError("Invalid exploration agent: {}".format(
++            exploration_config.get("type")))
+ 
+ 
+ def log_episode(exploration_episode, exploration_rewards, distances, path):
+-  with open(path, "w+") as f:
+-    f.write("Env ID: {}\n".format(exploration_episode[0].state.env_id))
+-    for t, (exp, exploration_reward, distance) in enumerate(
+-        zip(exploration_episode, exploration_rewards, distances)):
+-      f.write("=" * 80 + "\n")
+-      f.write("Timestep: {}\n".format(t))
+-      f.write("State: {}\n".format(exp.state.observation))
+-      f.write("Action: {}\n".format(grid.Action(exp.action).name))
+-      f.write("Reward: {}\n".format(exploration_reward))
+-      f.write("Distance: {}\n".format(distance))
+-      f.write("Next state: {}\n".format(exp.next_state.observation))
+-      f.write("=" * 80 + "\n")
+-      f.write("\n")
++    with open(path, "w+") as f:
++        f.write("Env ID: {}\n".format(exploration_episode[0].state.env_id))
++        for t, (exp, exploration_reward, distance) in enumerate(
++                zip(exploration_episode, exploration_rewards, distances)):
++            f.write("=" * 80 + "\n")
++            f.write("Timestep: {}\n".format(t))
++            f.write("State: {}\n".format(exp.state.observation))
++            f.write("Action: {}\n".format(grid.Action(exp.action).name))
++            f.write("Reward: {}\n".format(exploration_reward))
++            f.write("Distance: {}\n".format(distance))
++            f.write("Next state: {}\n".format(exp.next_state.observation))
++            f.write("=" * 80 + "\n")
++            f.write("\n")
+ 
+ 
+ def main():
+-  arg_parser = argparse.ArgumentParser()
+-  arg_parser.add_argument(
+-      '-c', '--configs', action='append', default=["configs/default.json"])
+-  arg_parser.add_argument(
+-      '-b', '--config_bindings', action='append', default=[],
+-      help="bindings to overwrite in the configs.")
+-  arg_parser.add_argument(
+-      "-x", "--base_dir", default="experiments",
+-      help="directory to log experiments")
+-  arg_parser.add_argument(
+-      "-p", "--checkpoint", default=None,
+-      help="path to checkpoint directory to load from or None")
+-  arg_parser.add_argument(
+-      "-f", "--force_overwrite", action="store_true",
+-      help="Overwrites experiment under this experiment name, if it exists.")
+-  arg_parser.add_argument(
+-      "-s", "--seed", default=0, help="random seed to use.", type=int)
+-  arg_parser.add_argument("exp_name", help="name of the experiment to run")
+-  args = arg_parser.parse_args()
+-  config = cfg.Config.from_files_and_bindings(
+-      args.configs, args.config_bindings)
+-
+-  np.random.seed(args.seed)
+-  torch.manual_seed(args.seed)
+-
+-  exp_dir = os.path.join(os.path.expanduser(args.base_dir), args.exp_name)
+-  if os.path.exists(exp_dir) and not args.force_overwrite:
+-    raise ValueError("Experiment already exists at: {}".format(exp_dir))
+-  shutil.rmtree(exp_dir, ignore_errors=True)  # remove directory if exists
+-  os.makedirs(exp_dir)
+-
+-  with open(os.path.join(exp_dir, "config.json"), "w+") as f:
+-    config.to_file(f)
+-  print(config)
+-
+-  env_class = get_env_class(config.get("environment"))
+-
+-  with open(os.path.join(exp_dir, "metadata.txt"), "w+") as f:
+-    repo = git.Repo()
+-    f.write("Commit: {}\n\n".format(repo.head.commit))
+-    commit = repo.head.commit
+-    diff = commit.diff(None, create_patch=True)
+-    for patch in diff:
+-      f.write(str(patch))
+-      f.write("\n\n")
+-    f.write("Split: {}\n".format(env_class.env_ids()))
+-
+-
+-  # Use GPU if possible
+-  device = torch.device("cpu")
+-  if torch.cuda.is_available():
+-    torch.set_default_tensor_type(torch.cuda.FloatTensor)
+-    device = torch.device("cuda:0")
+-
+-  print("Device: {}".format(device))
+-  tb_writer = utils.EpisodeAndStepWriter(os.path.join(exp_dir, "tensorboard"))
+-
+-  text_dir = os.path.join(exp_dir, "text")
+-  os.makedirs(text_dir)
+-
+-  checkpoint_dir = os.path.join(exp_dir, "checkpoints")
+-  os.makedirs(checkpoint_dir)
+-
+-  create_env = env_class.create_env
+-  exploration_env = create_env(0)
+-  instruction_env = env_class.instruction_wrapper()(exploration_env, [])
+-  instruction_config = config.get("instruction_agent")
+-  instruction_agent = get_instruction_agent(instruction_config, instruction_env)
+-
+-  exploration_config = config.get("exploration_agent")
+-  exploration_agent = get_exploration_agent(exploration_config, exploration_env)
+-
+-  # Should probably expose this more gracefully
+-  trajectory_embedder = (
+-      instruction_agent._dqn._Q._state_embedder._trajectory_embedder)
+-  exploration_agent.set_reward_relabeler(trajectory_embedder)
+-
+-  # Due to the above hack, the trajectory embedder is being loaded twice.
+-  if args.checkpoint is not None:
+-    print("Loading checkpoint: {}".format(args.checkpoint))
+-    instruction_agent.load_state_dict(
+-        torch.load(os.path.join(args.checkpoint, "instruction.pt")))
+-    exploration_agent.load_state_dict(
+-        torch.load(os.path.join(args.checkpoint, "exploration.pt")))
+-
+-  batch_size = 32
+-  rewards = collections.deque(maxlen=200)
+-  relabel_rewards = collections.deque(maxlen=200)
+-  exploration_lengths = collections.deque(maxlen=200)
+-  exploration_steps = 0
+-  instruction_steps = 0
+-  for step in tqdm.tqdm(range(1000000)):
+-    exploration_env = create_env(step)
+-    exploration_episode, _ = run_episode(
+-        # Exploration episode gets ignored
+-        env_class.instruction_wrapper()(
+-            exploration_env, [], seed=max(0, step - 1)),
+-        exploration_agent)
+-
+-    # Needed to keep references to the trajectory and index for reward labeling
+-    for index, exp in enumerate(exploration_episode):
+-      exploration_agent.update(
+-          relabel.TrajectoryExperience(exp, exploration_episode, index))
+-
+-    exploration_steps += len(exploration_episode)
+-    exploration_lengths.append(len(exploration_episode))
+-
+-    # Don't share same random seed between exploration env and instructions
+-    instruction_env = env_class.instruction_wrapper()(
+-        exploration_env, exploration_episode, seed=step + 1)
+-
+-    if step % 2 == 0:
+-      trajectory_embedder.use_ids(False)
+-    episode, _ = run_episode(
+-        instruction_env, instruction_agent,
+-        experience_observers=[instruction_agent.update])
+-    instruction_steps += len(episode)
+-    trajectory_embedder.use_ids(True)
+-
+-    rewards.append(sum(exp.reward for exp in episode))
+-
+-    # Log reward for exploration agent
+-    exploration_rewards, distances = trajectory_embedder.label_rewards(
+-        [exploration_episode])
+-    exploration_rewards = exploration_rewards[0]
+-    distances = distances[0]
+-    relabel_rewards.append(exploration_rewards.sum().item())
+-
+-    if step % 100 == 0:
+-      path = os.path.join(text_dir, "{}.txt".format(step))
+-      log_episode(exploration_episode, exploration_rewards, distances, path)
+-
+-    if step % 100 == 0:
+-      for k, v in instruction_agent.stats.items():
+-        if v is not None:
+-          tb_writer.add_scalar(
+-              "{}_{}".format("instruction", k), v, step,
+-              exploration_steps + instruction_steps)
+-
+-      for k, v in exploration_agent.stats.items():
+-        if v is not None:
+-          tb_writer.add_scalar(
+-              "{}_{}".format("exploration", k), v, step,
+-              exploration_steps + instruction_steps)
+-
+-      tb_writer.add_scalar(
+-          "steps/exploration", exploration_steps, step,
+-          exploration_steps + instruction_steps)
+-      tb_writer.add_scalar(
+-          "steps/instruction", instruction_steps, step,
+-          exploration_steps + instruction_steps)
+-      tb_writer.add_scalar(
+-          "reward/train", np.mean(rewards), step,
+-          exploration_steps + instruction_steps)
+-      tb_writer.add_scalar(
+-          "reward/exploration", np.mean(relabel_rewards), step,
+-          exploration_steps + instruction_steps)
+-      tb_writer.add_scalar(
+-          "steps/exploration_per_episode", np.mean(exploration_lengths),
+-          step, exploration_steps + instruction_steps)
+-
+-    if step % 2000 == 0:
+-      visualize_dir = os.path.join(exp_dir, "visualize", str(step))
+-      os.makedirs(visualize_dir, exist_ok=True)
+-
+-      test_rewards = []
+-      test_exploration_lengths = []
+-      trajectory_embedder.use_ids(False)
+-      for test_index in tqdm.tqdm(range(100)):
+-        exploration_env = create_env(test_index, test=True)
+-        exploration_episode, exploration_render = run_episode(
++    arg_parser = argparse.ArgumentParser()
++    arg_parser.add_argument(
++        '-c', '--configs', action='append', default=["configs/default.json"])
++    arg_parser.add_argument(
++        '-b', '--config_bindings', action='append', default=[],
++        help="bindings to overwrite in the configs.")
++    arg_parser.add_argument(
++        "-x", "--base_dir", default="experiments",
++        help="directory to log experiments")
++    arg_parser.add_argument(
++        "-p", "--checkpoint", default=None,
++        help="path to checkpoint directory to load from or None")
++    arg_parser.add_argument(
++        "-f", "--force_overwrite", action="store_true",
++        help="Overwrites experiment under this experiment name, if it exists.")
++    arg_parser.add_argument(
++        "-s", "--seed", default=0, help="random seed to use.", type=int)
++    arg_parser.add_argument("exp_name", help="name of the experiment to run")
++    args = arg_parser.parse_args()
++    config = cfg.Config.from_files_and_bindings(
++        args.configs, args.config_bindings)
++
++    np.random.seed(args.seed)
++    torch.manual_seed(args.seed)
++
++    exp_dir = os.path.join(os.path.expanduser(args.base_dir), config.get('environment'), args.exp_name)
++    if os.path.exists(exp_dir) and not args.force_overwrite:
++        raise ValueError("Experiment already exists at: {}".format(exp_dir))
++    shutil.rmtree(exp_dir, ignore_errors=True)  # remove directory if exists
++    os.makedirs(exp_dir)
++
++    with open(os.path.join(exp_dir, "config.json"), "w+") as f:
++        config.to_file(f)
++    print(config)
++
++    env_class = get_env_class(config.get("environment"))
++
++    with open(os.path.join(exp_dir, "metadata.txt"), "w+") as f:
++        repo = git.Repo()
++        f.write("Commit: {}\n\n".format(repo.head.commit))
++        commit = repo.head.commit
++        diff = commit.diff(None, create_patch=True)
++        for patch in diff:
++            f.write(str(patch))
++            f.write("\n\n")
++        f.write("Split: {}\n".format(env_class.env_ids()))
++
++    # Use GPU if possible
++    device = torch.device("cpu")
++    if torch.cuda.is_available():
++        torch.set_default_tensor_type(torch.cuda.FloatTensor)
++        device = torch.device("cuda:0")
++
++    print("Device: {}".format(device))
++    tb_writer = utils.EpisodeAndStepWriter(os.path.join(exp_dir, "tensorboard"))
++
++    text_dir = os.path.join(exp_dir, "text")
++    os.makedirs(text_dir)
++
++    checkpoint_dir = os.path.join(exp_dir, "checkpoints")
++    os.makedirs(checkpoint_dir)
++
++    create_env = env_class.create_env
++    exploration_env = create_env(0)
++    instruction_env = env_class.instruction_wrapper()(exploration_env, [])
++    instruction_config = config.get("instruction_agent")
++    instruction_agent = get_instruction_agent(instruction_config, instruction_env)
++
++    exploration_config = config.get("exploration_agent")
++    exploration_agent = get_exploration_agent(exploration_config, exploration_env)
++
++    # Should probably expose this more gracefully
++    trajectory_embedder = (
++        instruction_agent._dqn._Q._state_embedder._trajectory_embedder)
++    exploration_agent.set_reward_relabeler(trajectory_embedder)
++
++    # Due to the above hack, the trajectory embedder is being loaded twice.
++    if args.checkpoint is not None:
++        print("Loading checkpoint: {}".format(args.checkpoint))
++        instruction_agent.load_state_dict(
++            torch.load(os.path.join(args.checkpoint, "instruction.pt")))
++        exploration_agent.load_state_dict(
++            torch.load(os.path.join(args.checkpoint, "exploration.pt")))
++
++    batch_size = 32
++    rewards = collections.deque(maxlen=200)
++    relabel_rewards = collections.deque(maxlen=200)
++    exploration_lengths = collections.deque(maxlen=200)
++    exploration_steps = 0
++    instruction_steps = 0
++    for step in tqdm.tqdm(range(1000000)):
++        exploration_env = create_env(step)
++        exploration_episode, _ = run_episode(
++            # Exploration episode gets ignored
+             env_class.instruction_wrapper()(
+-                exploration_env, [], seed=max(0, test_index - 1), test=True),
+-            exploration_agent, test=True)
+-        test_exploration_lengths.append(len(exploration_episode))
++                exploration_env, [], seed=max(0, step - 1)),
++            exploration_agent)
+ 
+-        instruction_env = env_class.instruction_wrapper()(
+-            exploration_env, exploration_episode, seed=test_index + 1, test=True)
+-        episode, render = run_episode(
+-            instruction_env, instruction_agent, test=True)
+-        test_rewards.append(sum(exp.reward for exp in episode))
+-
+-        if test_index < 10:
+-          frames = [frame.image() for frame in render]
+-          save_path = os.path.join(
+-              visualize_dir, "{}-instruction.gif".format(test_index))
+-          frames[0].save(save_path, save_all=True, append_images=frames[1:],
+-                         duration=750, loop=0, optimize=True, quality=20)
+-
+-          frames = [frame.image() for frame in exploration_render]
+-          save_path = os.path.join(
+-              visualize_dir, "{}-exploration.gif".format(test_index))
+-          frames[0].save(save_path, save_all=True, append_images=frames[1:],
+-                         duration=750, loop=0, optimize=True, quality=20)
+-
+-      tb_writer.add_scalar(
+-          "reward/test", np.mean(test_rewards), step,
+-          exploration_steps + instruction_steps)
+-      tb_writer.add_scalar(
+-          "steps/test_exploration_per_episode",
+-          np.mean(test_exploration_lengths), step,
+-          exploration_steps + instruction_steps)
+-
+-      # Visualize training split
+-      visualize_dir = os.path.join(exp_dir, "visualize", str(step), "train")
+-      os.makedirs(visualize_dir, exist_ok=True)
+-      for train_index in tqdm.tqdm(range(10)):
+-        exploration_env = create_env(train_index)
+-        # Test flags here only refer to making agent act with test flag and
+-        # not test split environments
+-        exploration_episode, exploration_render = run_episode(
+-            env_class.instruction_wrapper()(
+-                exploration_env, [], seed=max(0, train_index - 1)),
+-            exploration_agent, test=True)
+-
+-        instruction_env = env_class.instruction_wrapper()(
+-            exploration_env, exploration_episode, seed=train_index + 1)
+-        episode, render = run_episode(
+-            instruction_env, instruction_agent, test=True)
++        # Needed to keep references to the trajectory and index for reward labeling
++        for index, exp in enumerate(exploration_episode):
++            exploration_agent.update(
++                relabel.TrajectoryExperience(exp, exploration_episode, index))
+ 
+-        frames = [frame.image() for frame in render]
+-        save_path = os.path.join(
+-            visualize_dir, "{}-instruction.gif".format(train_index))
+-        frames[0].save(save_path, save_all=True, append_images=frames[1:],
+-                       duration=750, loop=0)
++        exploration_steps += len(exploration_episode)
++        exploration_lengths.append(len(exploration_episode))
+ 
+-        frames = [frame.image() for frame in exploration_render]
+-        save_path = os.path.join(
+-            visualize_dir, "{}-exploration.gif".format(train_index))
+-        frames[0].save(save_path, save_all=True, append_images=frames[1:],
+-                       duration=750, loop=0)
+-      trajectory_embedder.use_ids(True)
+-
+-      if exploration_steps + instruction_steps > int(5e6):
+-        return
+-
+-    if step != 0 and step % 20000 == 0:
+-      print("Saving checkpoint")
+-      save_dir = os.path.join(checkpoint_dir, str(step))
+-      os.makedirs(save_dir)
+-
+-      torch.save(instruction_agent.state_dict(),
+-                 os.path.join(save_dir, "instruction.pt"))
+-      torch.save(exploration_agent.state_dict(),
+-                 os.path.join(save_dir, "exploration.pt"))
++        # Don't share same random seed between exploration env and instructions
++        instruction_env = env_class.instruction_wrapper()(
++            exploration_env, exploration_episode, seed=step + 1)
++
++        if step % 2 == 0:
++            trajectory_embedder.use_ids(False)
++        episode, _ = run_episode(
++            instruction_env, instruction_agent,
++            experience_observers=[instruction_agent.update])
++        instruction_steps += len(episode)
++        trajectory_embedder.use_ids(True)
++
++        rewards.append(sum(exp.reward for exp in episode))
++
++        # Log reward for exploration agent
++        exploration_rewards, distances = trajectory_embedder.label_rewards(
++            [exploration_episode])
++        exploration_rewards = exploration_rewards[0]
++        distances = distances[0]
++        relabel_rewards.append(exploration_rewards.sum().item())
++
++        if step % 100 == 0:
++            path = os.path.join(text_dir, "{}.txt".format(step))
++            log_episode(exploration_episode, exploration_rewards, distances, path)
++
++        if step % 100 == 0:
++            for k, v in instruction_agent.stats.items():
++                if v is not None:
++                    tb_writer.add_scalar(
++                        "{}_{}".format("instruction", k), v, step,
++                        exploration_steps + instruction_steps)
++
++            for k, v in exploration_agent.stats.items():
++                if v is not None:
++                    tb_writer.add_scalar(
++                        "{}_{}".format("exploration", k), v, step,
++                        exploration_steps + instruction_steps)
++
++            tb_writer.add_scalar(
++                "steps/exploration", exploration_steps, step,
++                exploration_steps + instruction_steps)
++            tb_writer.add_scalar(
++                "steps/instruction", instruction_steps, step,
++                exploration_steps + instruction_steps)
++            tb_writer.add_scalar(
++                "reward/train", np.mean(rewards), step,
++                exploration_steps + instruction_steps)
++            tb_writer.add_scalar(
++                "reward/exploration", np.mean(relabel_rewards), step,
++                exploration_steps + instruction_steps)
++            tb_writer.add_scalar(
++                "steps/exploration_per_episode", np.mean(exploration_lengths),
++                step, exploration_steps + instruction_steps)
++
++        if step % 2000 == 0:
++            visualize_dir = os.path.join(exp_dir, "visualize", str(step))
++            os.makedirs(visualize_dir, exist_ok=True)
++
++            test_rewards = []
++            test_exploration_lengths = []
++            trajectory_embedder.use_ids(False)
++            for test_index in tqdm.tqdm(range(100)):
++                exploration_env = create_env(test_index, test=True)
++                exploration_episode, exploration_render = run_episode(
++                    env_class.instruction_wrapper()(
++                        exploration_env, [], seed=max(0, test_index - 1), test=True),
++                    exploration_agent, test=True)
++                test_exploration_lengths.append(len(exploration_episode))
++
++                instruction_env = env_class.instruction_wrapper()(
++                    exploration_env, exploration_episode, seed=test_index + 1, test=True)
++                episode, render = run_episode(
++                    instruction_env, instruction_agent, test=True)
++                test_rewards.append(sum(exp.reward for exp in episode))
++
++                if test_index < 10:
++                    frames = [frame.image() for frame in render]
++                    save_path = os.path.join(
++                        visualize_dir, "{}-instruction.gif".format(test_index))
++                    frames[0].save(save_path, save_all=True, append_images=frames[1:],
++                                   duration=750, loop=0, optimize=True, quality=20)
++
++                    frames = [frame.image() for frame in exploration_render]
++                    save_path = os.path.join(
++                        visualize_dir, "{}-exploration.gif".format(test_index))
++                    frames[0].save(save_path, save_all=True, append_images=frames[1:],
++                                   duration=750, loop=0, optimize=True, quality=20)
++
++            tb_writer.add_scalar(
++                "reward/test", np.mean(test_rewards), step,
++                exploration_steps + instruction_steps)
++            tb_writer.add_scalar(
++                "steps/test_exploration_per_episode",
++                np.mean(test_exploration_lengths), step,
++                exploration_steps + instruction_steps)
++
++            # Visualize training split
++            visualize_dir = os.path.join(exp_dir, "visualize", str(step), "train")
++            os.makedirs(visualize_dir, exist_ok=True)
++            for train_index in tqdm.tqdm(range(10)):
++                exploration_env = create_env(train_index)
++                # Test flags here only refer to making agent act with test flag and
++                # not test split environments
++                exploration_episode, exploration_render = run_episode(
++                    env_class.instruction_wrapper()(
++                        exploration_env, [], seed=max(0, train_index - 1)),
++                    exploration_agent, test=True)
++
++                instruction_env = env_class.instruction_wrapper()(
++                    exploration_env, exploration_episode, seed=train_index + 1)
++                episode, render = run_episode(
++                    instruction_env, instruction_agent, test=True)
++
++                frames = [frame.image() for frame in render]
++                save_path = os.path.join(
++                    visualize_dir, "{}-instruction.gif".format(train_index))
++                frames[0].save(save_path, save_all=True, append_images=frames[1:],
++                               duration=750, loop=0)
++
++                frames = [frame.image() for frame in exploration_render]
++                save_path = os.path.join(
++                    visualize_dir, "{}-exploration.gif".format(train_index))
++                frames[0].save(save_path, save_all=True, append_images=frames[1:],
++                               duration=750, loop=0)
++            trajectory_embedder.use_ids(True)
++
++            if exploration_steps + instruction_steps > int(5e6):
++                return
++
++        if step != 0 and step % 20000 == 0:
++            print("Saving checkpoint")
++            save_dir = os.path.join(checkpoint_dir, str(step))
++            os.makedirs(save_dir)
++
++            torch.save(instruction_agent.state_dict(),
++                       os.path.join(save_dir, "instruction.pt"))
++            torch.save(exploration_agent.state_dict(),
++                       os.path.join(save_dir, "exploration.pt"))
+ 
+ 
+ if __name__ == '__main__':
+-  main()
++    main()
+
+---
+
+Split: (array([[ 0],
+       [ 1],
+       [ 2],
+       [ 3],
+       [ 4],
+       [ 5],
+       [ 6],
+       [ 7],
+       [ 8],
+       [ 9],
+       [10],
+       [11],
+       [12],
+       [13],
+       [14],
+       [15],
+       [16],
+       [17],
+       [18],
+       [19],
+       [20],
+       [21],
+       [22],
+       [23]]), array([[ 0],
+       [ 1],
+       [ 2],
+       [ 3],
+       [ 4],
+       [ 5],
+       [ 6],
+       [ 7],
+       [ 8],
+       [ 9],
+       [10],
+       [11],
+       [12],
+       [13],
+       [14],
+       [15],
+       [16],
+       [17],
+       [18],
+       [19],
+       [20],
+       [21],
+       [22],
+       [23]]))

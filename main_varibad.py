@@ -43,7 +43,7 @@ def main():
   np.random.seed(args.seed)
   torch.manual_seed(args.seed)
 
-  exp_dir = os.path.join(os.path.expanduser(args.base_dir), args.exp_name)
+  exp_dir = os.path.join(os.path.expanduser(args.base_dir), config.get('environment'),args.exp_name)
   if os.path.exists(exp_dir) and not args.force_overwrite:
     raise ValueError("Experiment already exists at: {}".format(exp_dir))
   shutil.rmtree(exp_dir, ignore_errors=True)  # remove directory if exists
