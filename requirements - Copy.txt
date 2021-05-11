@@ -1,0 +1,3 @@
+gym==0.16.0
+-e git+https://github.com/maximecb/gym-minigrid.git@a5f4ef3684875eba613087dcef21be57c186bdc8#egg=gym_minigrid
+-e git+https://github.com/maximecb/gym-miniworld.git@7531d6ca5a4de2361f6d00d1b24bfa135075736b#egg=gym_miniworld
