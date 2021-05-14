@@ -9,6 +9,8 @@
 echo "0"
 
 module load pytorch/1.4.0-python-3.7.4
+module load xvfb
+
 
 echo "1"
 
@@ -20,8 +22,8 @@ source ~/virtualenv/python3.7.4/bin/activate
 
 echo "3"
 
-
+echo "dream old miniworld"
 
 echo "4"
 
-python main.py dream -b environment=\"miniworld_sign\" -c configs/default.json -c configs/miniworld.json
+xvfb-run -a -s "-screen 0 1024x768x24 -ac +extension GLX +render -noreset" python3 main.py dream -b environment=\"miniworld_sign\" -c configs/default.json -c configs/miniworld.json
