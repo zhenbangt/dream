@@ -123,7 +123,7 @@ result_tables
 /third-party/miniwob-demos
 
 
-experiments/e-rl2/visualize
+
 experiments/**/**/visualize
 experiments/**/**/checkpoints
 experiments/**/**/text/**
